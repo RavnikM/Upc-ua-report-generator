@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>S7-1500 OPC-UA Cycle Report Prototype</title>
+    <title>Siemens S7-1500 OPC-UA Cycle Reporting &amp; Configuration UI</title>
     <style>
         * { box-sizing: border-box; }
         body {
@@ -11,54 +11,106 @@
             background: #f1f5f9;
             color: #0f172a;
             margin: 0;
-            padding: 20px;
+            padding: 0;
         }
-        .container { max-width: 1180px; margin: 0 auto; }
-        header {
+        .topbar {
             background: #0f172a;
             color: #fff;
-            padding: 16px 22px;
-            border-radius: 8px;
+            padding: 14px 24px;
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 18px;
+            border-bottom: 3px solid #2563eb;
         }
-        header h1 { margin: 0; font-size: 1.25rem; }
-        header p { margin: 4px 0 0 0; font-size: 0.85rem; color: #94a3b8; }
+        .topbar h1 { margin: 0; font-size: 1.2rem; }
+        .topbar p { margin: 3px 0 0 0; font-size: 0.8rem; color: #94a3b8; }
+        .status-pills { display: flex; gap: 10px; align-items: center; }
         .badge {
             padding: 5px 12px;
             border-radius: 999px;
             font-weight: 700;
-            font-size: 0.8rem;
+            font-size: 0.78rem;
+            display: inline-block;
         }
+        .badge-ok { background: #22c55e; color: #052e16; }
+        .badge-warn { background: #f59e0b; color: #451a03; }
+        .badge-err { background: #ef4444; color: #fff; }
         .badge-idle { background: #334155; color: #e2e8f0; }
-        .badge-active { background: #22c55e; color: #052e16; }
-        .grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 16px;
-            margin-bottom: 18px;
+
+        .tabs-nav {
+            background: #1e293b;
+            padding: 0 24px;
+            display: flex;
+            gap: 4px;
         }
+        .tab-btn {
+            background: transparent;
+            color: #cbd5e1;
+            border: none;
+            padding: 12px 18px;
+            font-size: 0.88rem;
+            font-weight: 600;
+            cursor: pointer;
+            border-bottom: 3px solid transparent;
+            border-radius: 0;
+        }
+        .tab-btn:hover { color: #fff; background: #334155; }
+        .tab-btn.active {
+            color: #fff;
+            border-bottom-color: #3b82f6;
+            background: #0f172a;
+        }
+
+        .container { max-width: 1260px; margin: 20px auto; padding: 0 20px 40px 20px; }
+        .tab-panel { display: none; }
+        .tab-panel.active { display: block; }
+
         .card {
             background: #fff;
             border: 1px solid #cbd5e1;
             border-radius: 8px;
-            padding: 16px;
+            padding: 18px;
+            margin-bottom: 18px;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.03);
         }
-        .card h2 {
-            margin: 0 0 12px 0;
-            font-size: 1rem;
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
             border-bottom: 1px solid #e2e8f0;
-            padding-bottom: 8px;
+            padding-bottom: 10px;
+            margin-bottom: 14px;
         }
-        .controls { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
-        input[type="text"] {
+        .card-header h2 { margin: 0; font-size: 1.02rem; color: #0f172a; }
+        .card-header p { margin: 2px 0 0 0; font-size: 0.8rem; color: #64748b; }
+
+        .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+        .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+        .form-group { margin-bottom: 12px; }
+        .form-group label {
+            display: block;
+            font-size: 0.8rem;
+            font-weight: 600;
+            color: #334155;
+            margin-bottom: 4px;
+        }
+        input[type="text"], input[type="password"], input[type="number"], select {
+            width: 100%;
             padding: 7px 10px;
             border: 1px solid #cbd5e1;
             border-radius: 5px;
-            font-size: 0.88rem;
+            font-size: 0.86rem;
+            background: #fff;
         }
+        input[type="color"] {
+            height: 32px;
+            width: 50px;
+            padding: 2px;
+            border: 1px solid #cbd5e1;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
         button {
             background: #2563eb;
             color: #fff;
@@ -67,180 +119,1095 @@
             border-radius: 5px;
             cursor: pointer;
             font-weight: 600;
-            font-size: 0.85rem;
+            font-size: 0.83rem;
         }
         button:hover { background: #1d4ed8; }
         button.secondary { background: #475569; }
         button.secondary:hover { background: #334155; }
-        button.warn { background: #dc2626; }
-        button.warn:hover { background: #b91c1c; }
+        button.success { background: #16a34a; }
+        button.success:hover { background: #15803d; }
+        button.danger { background: #dc2626; }
+        button.danger:hover { background: #b91c1c; }
+        button.sm { padding: 4px 9px; font-size: 0.76rem; }
+
         table {
             width: 100%;
             border-collapse: collapse;
-            font-size: 0.86rem;
+            font-size: 0.84rem;
         }
         th, td {
             text-align: left;
-            padding: 8px 10px;
+            padding: 7px 9px;
             border-bottom: 1px solid #e2e8f0;
+            vertical-align: middle;
         }
         th { background: #f8fafc; font-weight: 600; color: #475569; }
         code {
             background: #f1f5f9;
             padding: 2px 5px;
             border-radius: 4px;
-            font-size: 0.8rem;
+            font-family: "SFMono-Regular", Consolas, monospace;
+            font-size: 0.79rem;
         }
-        textarea {
-            width: 100%;
-            height: 210px;
-            font-family: monospace;
-            font-size: 0.8rem;
-            padding: 8px;
-            border: 1px solid #cbd5e1;
-            border-radius: 5px;
+
+        .sub-box {
+            border: 1px solid #e2e8f0;
+            background: #f8fafc;
+            border-radius: 6px;
+            padding: 12px;
+            margin-bottom: 12px;
         }
-        .status-msg {
-            margin-top: 8px;
-            font-size: 0.83rem;
-            color: #0369a1;
-            min-height: 1.2em;
+        .alert-bar {
+            padding: 10px 14px;
+            border-radius: 6px;
+            font-size: 0.84rem;
+            margin-top: 10px;
+            display: none;
         }
+        .alert-info { background: #e0f2fe; color: #0369a1; border: 1px solid #bae6fd; }
+        .alert-ok { background: #dcfce7; color: #166534; border: 1px solid #86efac; }
+        .alert-err { background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; }
     </style>
 </head>
 <body>
-<div class="container">
-    <header>
-        <div>
-            <h1>Siemens S7-1500 OPC-UA Cycle Reporting Prototype</h1>
-            <p>One-shot Header Tags (Batch_Number) &bull; 0.5s Bulk Time-Series Polling &bull; Watchdog CSV Alarm Ingestion (.bckup)</p>
-        </div>
-        <div>
-            <span id="poller-badge" class="badge badge-idle">POLLER: IDLE</span>
-        </div>
-    </header>
 
-    <div class="grid">
-        <div class="card">
-            <h2>1. PLC Cycle &amp; Watchdog CSV Simulator</h2>
-            <div class="controls" style="margin-bottom: 10px;">
-                <label style="font-size:0.85rem; font-weight:600;">Batch Number:</label>
-                <input type="text" id="batch-input" value="BATCH-2026-101" style="width: 160px;">
-                <button onclick="simulateCycle(false)">Run Clean Cycle (2.5s)</button>
-                <button class="warn" onclick="simulateCycle(true)">Run Cycle + CSV Alarm</button>
-            </div>
-            <div class="controls">
-                <button class="secondary" onclick="dropSampleCsv()">Drop Standalone Alarm CSV into Watch Folder</button>
-            </div>
-            <div id="sim-status" class="status-msg"></div>
-            <div style="font-size: 0.82rem; color: #475569; margin-top: 8px;">
-                <div><strong>Watched Folder:</strong> <code id="watch-dir">./watched_alarms</code> &rarr; moves read CSVs to <code>.bckup/</code></div>
-                <div style="margin-top:4px;"><strong>Backed-up CSV files (<code>.bckup</code>):</strong> <span id="bckup-list">none</span></div>
-            </div>
-        </div>
-
-        <div class="card">
-            <h2>2. Active Report Schema (One-Shot Header vs. 0.5s Tags)</h2>
-            <textarea id="schema-editor"></textarea>
-            <div class="controls" style="margin-top: 8px; justify-content: space-between;">
-                <span id="schema-status" style="font-size: 0.8rem; color: #15803d;"></span>
-                <button class="secondary" onclick="saveSchema()">Save Schema Config</button>
-            </div>
-        </div>
+<div class="topbar">
+    <div>
+        <h1>Siemens S7-1500 OPC-UA Cycle Reporting System</h1>
+        <p>PLC Configuration &bull; One-Shot Header &amp; 0.5s Tag Mapping &bull; Visual Report Editor &bull; Watchdog CSV Alarms</p>
     </div>
-
-    <div class="card" style="margin-bottom: 18px;">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-            <h2 style="margin:0; border:none; padding:0;">3. Completed Machine Cycles &amp; PDF Reports</h2>
-            <button class="secondary" onclick="refreshDashboard()">Refresh</button>
-        </div>
-        <table>
-            <thead>
-                <tr>
-                    <th>Cycle ID</th>
-                    <th>Batch Number (One-Shot)</th>
-                    <th>Header Metadata</th>
-                    <th>Start Time (UTC)</th>
-                    <th>End Time (UTC)</th>
-                    <th>Status</th>
-                    <th>PDF Report</th>
-                </tr>
-            </thead>
-            <tbody id="cycles-tbody">
-                <tr><td colspan="7">Loading...</td></tr>
-            </tbody>
-        </table>
-    </div>
-
-    <div class="card">
-        <h2>4. Ingested CSV Alarms in Database (<code>cycle_alarm_logs</code>)</h2>
-        <table>
-            <thead>
-                <tr>
-                    <th>ID</th>
-                    <th>Cycle ID</th>
-                    <th>Timestamp (UTC)</th>
-                    <th>Alarm Code</th>
-                    <th>Severity</th>
-                    <th>Alarm Text</th>
-                    <th>Source CSV File</th>
-                </tr>
-            </thead>
-            <tbody id="alarms-tbody">
-                <tr><td colspan="7">Loading...</td></tr>
-            </tbody>
-        </table>
+    <div class="status-pills">
+        <span id="conn-badge" class="badge badge-idle">PLC: CHECKING...</span>
+        <span id="poller-badge" class="badge badge-idle">POLLER: IDLE</span>
     </div>
 </div>
 
+<div class="tabs-nav">
+    <button class="tab-btn active" onclick="switchTab('tab-config', this)">1. PLC Connection &amp; Browser</button>
+    <button class="tab-btn" onclick="switchTab('tab-mapping', this)">2. OPC-UA Data Mapping</button>
+    <button class="tab-btn" onclick="switchTab('tab-report', this)">3. Visual Report Editor</button>
+    <button class="tab-btn" onclick="switchTab('tab-cycles', this)">4. Cycles, CSV Alarms &amp; PDFs</button>
+</div>
+
+<div class="container">
+
+    <!-- ================================================================= -->
+    <!-- TAB 1: PLC CONNECTION, POLLER CONTROL & LIVE ADDRESS SPACE BROWSER -->
+    <!-- ================================================================= -->
+    <div id="tab-config" class="tab-panel active">
+        <div class="grid-2">
+            <div class="card">
+                <div class="card-header">
+                    <div>
+                        <h2>Siemens S7-1500 OPC-UA Connection Settings</h2>
+                        <p>Configure real PLC IP/port or toggle local mock server for offline testing</p>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>OPC-UA Endpoint URL (S7-1500 default port is 4840)</label>
+                    <input type="text" id="cfg-endpoint" placeholder="opc.tcp://192.168.0.1:4840">
+                </div>
+
+                <div class="grid-2">
+                    <div class="form-group">
+                        <label>OPC-UA Username (optional)</label>
+                        <input type="text" id="cfg-username" placeholder="Leave blank for Anonymous">
+                    </div>
+                    <div class="form-group">
+                        <label>OPC-UA Password (optional)</label>
+                        <input type="password" id="cfg-password" placeholder="Leave blank for Anonymous">
+                    </div>
+                </div>
+
+                <div class="grid-2">
+                    <div class="form-group">
+                        <label>Bulk Poll Interval (seconds)</label>
+                        <input type="number" id="cfg-interval" step="0.1" min="0.1" value="0.5">
+                    </div>
+                    <div class="form-group">
+                        <label>Watchdog Alarm CSV Folder (moves read files to .bckup)</label>
+                        <input type="text" id="cfg-watchdir" value="./watched_alarms">
+                    </div>
+                </div>
+
+                <div class="form-group" style="margin-top: 6px;">
+                    <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+                        <input type="checkbox" id="cfg-mock" onchange="onMockToggleChanged()">
+                        <span>Use Embedded Mock S7-1500 Server (runs on <code>opc.tcp://127.0.0.1:48440</code>; uncheck to connect to real PLC)</span>
+                    </label>
+                </div>
+
+                <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:14px;">
+                    <button onclick="testPlcConnection()">Test PLC Connection</button>
+                    <button class="success" onclick="saveSystemConfig()">Save &amp; Restart Poller</button>
+                    <button class="danger" onclick="stopPoller()">Stop Poller</button>
+                </div>
+
+                <div id="cfg-alert" class="alert-bar"></div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <div>
+                        <h2>Live Runtime Diagnostics</h2>
+                        <p>Real-time status of the 0.5s state-machine poller and Watchdog CSV service</p>
+                    </div>
+                    <button class="secondary sm" onclick="refreshStatus()">Refresh</button>
+                </div>
+                <table>
+                    <tbody>
+                        <tr>
+                            <th>Poller State</th>
+                            <td><strong id="diag-state">—</strong></td>
+                        </tr>
+                        <tr>
+                            <th>Active Endpoint</th>
+                            <td><code id="diag-endpoint">—</code></td>
+                        </tr>
+                        <tr>
+                            <th>PLC Connection</th>
+                            <td id="diag-connected">—</td>
+                        </tr>
+                        <tr>
+                            <th>Active Cycle / Header</th>
+                            <td id="diag-cycle">—</td>
+                        </tr>
+                        <tr>
+                            <th>Invalid NodeIDs Detected</th>
+                            <td id="diag-invalid">—</td>
+                        </tr>
+                        <tr>
+                            <th>Last Communication Error</th>
+                            <td id="diag-error" style="color:#dc2626;">—</td>
+                        </tr>
+                        <tr>
+                            <th>Watchdog CSV Folder</th>
+                            <td><code id="diag-watchdir">—</code> (<span id="diag-csvcount">0</span> files moved to <code>.bckup/</code>)</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- LIVE PLC NODE BROWSER & QUICK TESTER -->
+        <div class="card">
+            <div class="card-header">
+                <div>
+                    <h2>Live PLC Address Space Browser &amp; Node Tester</h2>
+                    <p>Browse folders on the connected S7-1500 PLC or test-read any NodeID string before mapping</p>
+                </div>
+                <div style="display:flex; gap:8px; align-items:center;">
+                    <input type="text" id="browse-parent-input" placeholder="Parent NodeId (blank = Objects root)" style="width:280px;">
+                    <button onclick="browsePlcNodes()">Browse Node</button>
+                    <button class="secondary" onclick="document.getElementById('browse-parent-input').value=''; browsePlcNodes();">Reset to Root</button>
+                </div>
+            </div>
+
+            <div style="display:flex; gap:8px; align-items:center; margin-bottom: 12px;">
+                <input type="text" id="adhoc-node-input" placeholder='Paste S7-1500 NodeID to test, e.g. ns=3;s="Cycle_Control"."Cycle_Active"' style="max-width: 480px;">
+                <button class="secondary" onclick="testSingleAdhocNode()">Test Read Node Value</button>
+                <span id="adhoc-node-result" style="font-size:0.84rem; font-family:monospace;"></span>
+            </div>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Browse Name</th>
+                        <th>Class</th>
+                        <th>OPC-UA NodeID</th>
+                        <th>Quick Map Action</th>
+                    </tr>
+                </thead>
+                <tbody id="browser-tbody">
+                    <tr><td colspan="4" style="color:#64748b;">Click "Browse Node" above to inspect the connected PLC's address space.</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- ================================================================= -->
+    <!-- TAB 2: OPC-UA DATA MAPPING (TRIGGER, ONE-SHOT HEADER, 0.5S TAGS)  -->
+    <!-- ================================================================= -->
+    <div id="tab-mapping" class="tab-panel">
+        <div class="card">
+            <div class="card-header">
+                <div>
+                    <h2>1. Cycle Trigger Node (State Machine Control)</h2>
+                    <p>Polled every 0.5s in IDLE. Rising edge (TRUE) starts cycle &amp; reads One-Shot Header tags; Falling edge (FALSE) triggers PDF generation.</p>
+                </div>
+                <button class="secondary sm" onclick="testTriggerNode()">Test Read Trigger</button>
+            </div>
+            <div style="display:flex; gap:12px; align-items:center;">
+                <div style="flex:1;">
+                    <input type="text" id="map-trigger-node" placeholder='ns=3;s="Cycle_Control"."Cycle_Active"'>
+                </div>
+                <div id="trigger-test-result" style="font-size:0.84rem; min-width:240px;"></div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <div>
+                    <h2>2. One-Shot Cycle Header Tags (Read ONCE on Cycle Start)</h2>
+                    <p>Static cycle data (such as <code>Batch_Number</code>, <code>Recipe_Name</code>) read once when <code>Cycle_Active</code> goes TRUE. Never redundantly polled every 0.5s.</p>
+                </div>
+                <div style="display:flex; gap:8px;">
+                    <button class="secondary sm" onclick="testMappingTable('header-tags-tbody')">Test Read All Header Tags on PLC</button>
+                    <button class="sm" onclick="addTagRow('header-tags-tbody', '', '')">+ Add Header Tag</button>
+                </div>
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th style="width:25%;">Logical Tag Name (Use <code>Batch_Number</code> for primary batch)</th>
+                        <th style="width:42%;">Siemens S7-1500 OPC-UA NodeID</th>
+                        <th style="width:23%;">Live PLC Test Result</th>
+                        <th style="width:10%;">Remove</th>
+                    </tr>
+                </thead>
+                <tbody id="header-tags-tbody"></tbody>
+            </table>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <div>
+                    <h2>3. Continuous 0.5s Bulk-Polled Process Tags (Time-Series Data)</h2>
+                    <p>Dynamic process variables (Temperatures, Pressures, Speeds) read in a SINGLE bulk request every 0.5s while <code>Cycle_Active</code> is TRUE.</p>
+                </div>
+                <div style="display:flex; gap:8px;">
+                    <button class="secondary sm" onclick="testMappingTable('polled-tags-tbody')">Test Bulk Read All 0.5s Tags on PLC</button>
+                    <button class="sm" onclick="addTagRow('polled-tags-tbody', '', '')">+ Add 0.5s Process Tag</button>
+                </div>
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th style="width:25%;">Logical Tag Name</th>
+                        <th style="width:42%;">Siemens S7-1500 OPC-UA NodeID</th>
+                        <th style="width:23%;">Live PLC Test Result</th>
+                        <th style="width:10%;">Remove</th>
+                    </tr>
+                </thead>
+                <tbody id="polled-tags-tbody"></tbody>
+            </table>
+
+            <div style="margin-top:16px; display:flex; justify-content:space-between; align-items:center;">
+                <span id="mapping-save-msg" style="font-weight:600; color:#15803d; font-size:0.86rem;"></span>
+                <button class="success" onclick="saveFullSchema()">Save Data Mapping &amp; Apply to Poller</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ================================================================= -->
+    <!-- TAB 3: VISUAL REPORT EDITOR (HEADER, CHARTS, TABLES, ALARMS)      -->
+    <!-- ================================================================= -->
+    <div id="tab-report" class="tab-panel">
+        <div class="card">
+            <div class="card-header">
+                <div>
+                    <h2>Report Header &amp; OS Printing Configuration</h2>
+                    <p>Configure PDF report titles and automatic Windows printing (<code>win32print</code>)</p>
+                </div>
+            </div>
+            <div class="grid-3">
+                <div class="form-group">
+                    <label>Schema Identifier Name</label>
+                    <input type="text" id="rep-name" placeholder="Default_S7_Cycle_Report">
+                </div>
+                <div class="form-group">
+                    <label>PDF Report Header Title</label>
+                    <input type="text" id="rep-title" placeholder="Siemens S7-1500 Machine Cycle Report">
+                </div>
+                <div class="form-group">
+                    <label>Machine / Line Name</label>
+                    <input type="text" id="rep-machine" placeholder="S7-1500 Line #1">
+                </div>
+            </div>
+            <div class="grid-2" style="align-items:center;">
+                <div class="form-group">
+                    <label style="display:flex; align-items:center; gap:8px; cursor:pointer; margin-top:10px;">
+                        <input type="checkbox" id="rep-autoprint">
+                        <span>Automatically print PDF via OS Printer (<code>win32print</code>) on cycle completion</span>
+                    </label>
+                </div>
+                <div class="form-group">
+                    <label>Target OS Printer Name (leave blank for Windows Default Printer)</label>
+                    <input type="text" id="rep-printer" placeholder="Factory_Default_Printer">
+                </div>
+            </div>
+        </div>
+
+        <!-- CHARTS BUILDER -->
+        <div class="card">
+            <div class="card-header">
+                <div>
+                    <h2>Time-Series Charts (Matplotlib &rarr; PDF)</h2>
+                    <p>Map one or more 0.5s process tags onto time-series charts in the generated PDF report</p>
+                </div>
+                <button class="sm" onclick="addChartBlock()">+ Add Chart</button>
+            </div>
+            <div id="charts-container"></div>
+        </div>
+
+        <!-- PARAMETER TABLES BUILDER -->
+        <div class="card">
+            <div class="card-header">
+                <div>
+                    <h2>Parameter Statistical Summary Tables (Min / Max / Avg / Setpoint Tolerance)</h2>
+                    <p>Configure parameter summary rows calculated from the 0.5s time-series data</p>
+                </div>
+                <button class="sm" onclick="addParamTableBlock()">+ Add Parameter Table</button>
+            </div>
+            <div id="tables-container"></div>
+        </div>
+
+        <!-- OPC-UA ALARMS BUILDER -->
+        <div class="card">
+            <div class="card-header">
+                <div>
+                    <h2>OPC-UA Process Alarm Rules (Evaluated Alongside Watchdog CSV Alarms)</h2>
+                    <p>Optional threshold or boolean interlock rules evaluated across the 0.5s time-series data</p>
+                </div>
+                <button class="sm" onclick="addAlarmRuleRow()">+ Add OPC-UA Alarm Rule</button>
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Rule ID</th>
+                        <th>Monitored Tag</th>
+                        <th>Condition</th>
+                        <th>Threshold</th>
+                        <th>Severity</th>
+                        <th>Alarm Description on Report</th>
+                        <th>Remove</th>
+                    </tr>
+                </thead>
+                <tbody id="alarm-rules-tbody"></tbody>
+            </table>
+
+            <div style="margin-top:18px; display:flex; justify-content:space-between; align-items:center;">
+                <span id="report-save-msg" style="font-weight:600; color:#15803d; font-size:0.86rem;"></span>
+                <button class="success" onclick="saveFullSchema()">Save Report Layout &amp; Apply</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ================================================================= -->
+    <!-- TAB 4: RECORDED CYCLES, CSV ALARMS & GENERATED PDF REPORTS        -->
+    <!-- ================================================================= -->
+    <div id="tab-cycles" class="tab-panel">
+        <div class="card" id="mock-sim-card">
+            <div class="card-header">
+                <div>
+                    <h2>Test Cycle &amp; Watchdog CSV Alarm Trigger</h2>
+                    <p>Drop a test CSV alarm file into the watched folder (works in both Real PLC &amp; Mock PLC modes) or run a simulated cycle when Mock PLC is active</p>
+                </div>
+            </div>
+            <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+                <label style="font-size:0.84rem; font-weight:600;">Batch Number (Mock PLC):</label>
+                <input type="text" id="sim-batch" value="BATCH-2026-101" style="width:170px;">
+                <button onclick="simulateCycle(false)">Simulate Clean Cycle (Mock PLC)</button>
+                <button class="danger" onclick="simulateCycle(true)">Simulate Cycle + CSV Alarm</button>
+                <button class="secondary" onclick="dropSampleCsv()">Drop Alarm CSV into Watched Folder</button>
+                <span id="sim-msg" style="font-size:0.84rem; color:#0369a1; font-weight:600;"></span>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <div>
+                    <h2>Completed &amp; Running Machine Cycles</h2>
+                    <p>Displays one-shot <code>Batch_Number</code>, static header tags, cycle timestamps, and generated PDF reports</p>
+                </div>
+                <button class="secondary sm" onclick="loadCyclesAndAlarms()">Refresh</button>
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Cycle ID</th>
+                        <th>Batch Number (One-Shot)</th>
+                        <th>Static Header Metadata</th>
+                        <th>Start Time (UTC)</th>
+                        <th>End Time (UTC)</th>
+                        <th>Status</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="cycles-tbody">
+                    <tr><td colspan="7">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <div>
+                    <h2>Ingested Watchdog CSV Alarms (<code>cycle_alarm_logs</code>)</h2>
+                    <p>Alarms automatically parsed from CSV files dropped in the watched folder before moving to <code>.bckup/</code></p>
+                </div>
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Cycle ID</th>
+                        <th>Timestamp (UTC)</th>
+                        <th>Alarm Code</th>
+                        <th>Severity</th>
+                        <th>Alarm Text</th>
+                        <th>Source CSV File (.bckup)</th>
+                    </tr>
+                </thead>
+                <tbody id="csv-alarms-tbody">
+                    <tr><td colspan="7">Loading...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+</div>
+
 <script>
-let currentSchemaId = null;
+let activeSchemaId = null;
 
-async function refreshDashboard() {
-    const statusRes = await fetch('/api/prototype/status');
-    const statusData = await statusRes.json();
+function switchTab(tabId, btnEl) {
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById(tabId).classList.add('active');
+    btnEl.classList.add('active');
+    if (tabId === 'tab-cycles') loadCyclesAndAlarms();
+}
 
-    const badge = document.getElementById('poller-badge');
-    badge.textContent = `POLLER: ${statusData.poller_state}`;
-    badge.className = 'badge ' + (statusData.poller_state === 'ACTIVE' ? 'badge-active' : 'badge-idle');
-    document.getElementById('watch-dir').textContent = statusData.watch_dir;
-    document.getElementById('bckup-list').textContent = statusData.backup_files.length
-        ? statusData.backup_files.join(', ')
-        : 'none';
+function showAlert(elId, text, kind) {
+    const el = document.getElementById(elId);
+    el.style.display = 'block';
+    el.className = 'alert-bar alert-' + kind;
+    el.textContent = text;
+}
 
-    const cyclesRes = await fetch('/api/cycles?limit=15');
-    const cycles = await cyclesRes.json();
-    const tbody = document.getElementById('cycles-tbody');
-    if (!cycles.length) {
-        tbody.innerHTML = '<tr><td colspan="7" style="color:#64748b;">No cycles recorded yet. Click "Run Clean Cycle" above!</td></tr>';
+// =====================================================================
+// TAB 1: SYSTEM CONFIG, CONNECTION TEST & NODE BROWSER
+// =====================================================================
+let savedRealEndpoint = 'opc.tcp://192.168.0.1:4840';
+
+async function loadSystemConfig() {
+    const res = await fetch('/api/config');
+    const cfg = await res.json();
+    const ep = cfg.opcua_endpoint_url || 'opc.tcp://192.168.0.1:4840';
+    if (!ep.startsWith('opc.tcp://127.0.0.1')) {
+        savedRealEndpoint = ep;
+    }
+    document.getElementById('cfg-mock').checked = Boolean(cfg.use_mock_plc);
+    document.getElementById('cfg-endpoint').value = cfg.use_mock_plc
+        ? 'opc.tcp://127.0.0.1:48440'
+        : ep;
+    document.getElementById('cfg-username').value = cfg.opcua_username || '';
+    document.getElementById('cfg-password').value = cfg.opcua_password || '';
+    document.getElementById('cfg-interval').value = cfg.poll_interval_seconds || 0.5;
+    document.getElementById('cfg-watchdir').value = cfg.csv_watch_dir || './watched_alarms';
+}
+
+async function saveSystemConfig() {
+    showAlert('cfg-alert', 'Saving configuration and restarting OPC-UA poller...', 'info');
+    const payload = {
+        opcua_endpoint_url: document.getElementById('cfg-endpoint').value.trim(),
+        opcua_username: document.getElementById('cfg-username').value.trim() || null,
+        opcua_password: document.getElementById('cfg-password').value || null,
+        poll_interval_seconds: parseFloat(document.getElementById('cfg-interval').value) || 0.5,
+        csv_watch_dir: document.getElementById('cfg-watchdir').value.trim() || './watched_alarms',
+        use_mock_plc: document.getElementById('cfg-mock').checked,
+        active_schema_id: activeSchemaId
+    };
+    const res = await fetch('/api/config?restart_poller=true', {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+    });
+    if (res.ok) {
+        showAlert('cfg-alert', 'Configuration saved and OPC-UA poller restarted!', 'ok');
+        setTimeout(refreshStatus, 600);
     } else {
-        tbody.innerHTML = cycles.map(c => {
+        const err = await res.json();
+        showAlert('cfg-alert', 'Error: ' + JSON.stringify(err.detail), 'err');
+    }
+}
+
+async function stopPoller() {
+    await fetch('/api/poller/stop', {method: 'POST'});
+    showAlert('cfg-alert', 'Background OPC-UA poller stopped.', 'info');
+    refreshStatus();
+}
+
+async function onMockToggleChanged() {
+    const isMock = document.getElementById('cfg-mock').checked;
+    const epInput = document.getElementById('cfg-endpoint');
+    if (isMock) {
+        if (!epInput.value.startsWith('opc.tcp://127.0.0.1')) {
+            savedRealEndpoint = epInput.value.trim() || 'opc.tcp://192.168.0.1:4840';
+        }
+        epInput.value = 'opc.tcp://127.0.0.1:48440';
+    } else {
+        epInput.value = savedRealEndpoint;
+    }
+    await saveSystemConfig();
+}
+
+async function testPlcConnection() {
+    showAlert('cfg-alert', 'Testing connection to PLC OPC-UA endpoint...', 'info');
+    const payload = {
+        opcua_endpoint_url: document.getElementById('cfg-endpoint').value.trim(),
+        opcua_username: document.getElementById('cfg-username').value.trim() || null,
+        opcua_password: document.getElementById('cfg-password').value || null,
+        use_mock_plc: document.getElementById('cfg-mock').checked
+    };
+    const res = await fetch('/api/plc/test-connection', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if (data.ok) {
+        const nsList = data.namespaces.map(n => `ns=${n.index}: ${n.uri}`).join(' | ');
+        showAlert('cfg-alert', `Connected to ${data.endpoint_url} in ${data.latency_ms} ms! Namespaces: ${nsList}`, 'ok');
+    } else {
+        showAlert('cfg-alert', `Connection failed (${data.endpoint_url}): ${data.error}`, 'err');
+    }
+}
+
+async function refreshStatus() {
+    try {
+        const res = await fetch('/api/prototype/status');
+        const st = await res.json();
+
+        const connBadge = document.getElementById('conn-badge');
+        if (st.is_connected) {
+            connBadge.textContent = st.mock_plc_active ? 'PLC: CONNECTED (MOCK)' : 'PLC: CONNECTED (LIVE)';
+            connBadge.className = 'badge badge-ok';
+        } else {
+            connBadge.textContent = st.poller_running ? 'PLC: DISCONNECTED' : 'PLC: STOPPED';
+            connBadge.className = 'badge ' + (st.poller_running ? 'badge-err' : 'badge-idle');
+        }
+
+        const pollerBadge = document.getElementById('poller-badge');
+        pollerBadge.textContent = `POLLER: ${st.poller_state}`;
+        pollerBadge.className = 'badge ' + (st.poller_state === 'ACTIVE' ? 'badge-ok' : 'badge-idle');
+
+        document.getElementById('diag-state').textContent = st.poller_state;
+        document.getElementById('diag-endpoint').textContent = st.endpoint_url || 'Not running';
+        document.getElementById('diag-connected').innerHTML = st.is_connected
+            ? '<span style="color:#15803d;font-weight:700;">Connected</span>'
+            : '<span style="color:#dc2626;font-weight:700;">Disconnected</span>';
+        document.getElementById('diag-cycle').textContent = st.active_cycle_id
+            ? `Cycle #${st.active_cycle_id} | Header: ${JSON.stringify(st.active_header_data)}`
+            : 'None (IDLE)';
+
+        const invKeys = Object.keys(st.invalid_data_nodes || {});
+        document.getElementById('diag-invalid').innerHTML = invKeys.length
+            ? `<span style="color:#dc2626;font-weight:700;">${JSON.stringify(st.invalid_data_nodes)}</span>`
+            : '<span style="color:#15803d;">All configured nodes valid (Good)</span>';
+        document.getElementById('diag-error').textContent = st.last_error || 'None';
+        document.getElementById('diag-watchdir').textContent = st.watch_dir;
+        document.getElementById('diag-csvcount').textContent = st.backup_files.length;
+    } catch (e) {}
+}
+
+async function browsePlcNodes(parentNodeIdOverride) {
+    const inputEl = document.getElementById('browse-parent-input');
+    if (parentNodeIdOverride !== undefined) {
+        inputEl.value = parentNodeIdOverride;
+    }
+    const parentId = inputEl.value.trim();
+    const tbody = document.getElementById('browser-tbody');
+    tbody.innerHTML = '<tr><td colspan="4">Browsing PLC address space...</td></tr>';
+
+    const useMock = document.getElementById('cfg-mock').checked;
+    const params = new URLSearchParams({use_mock_plc: String(useMock)});
+    if (parentId) params.set('parent_node_id', parentId);
+    const url = '/api/plc/browse?' + params.toString();
+    const res = await fetch(url);
+    const data = await res.json();
+    if (!data.ok) {
+        tbody.innerHTML = `<tr><td colspan="4" style="color:#dc2626;">Browse error: ${data.error}</td></tr>`;
+        return;
+    }
+    if (!data.children.length) {
+        tbody.innerHTML = '<tr><td colspan="4" style="color:#64748b;">No child nodes found under this node.</td></tr>';
+        return;
+    }
+    tbody.innerHTML = data.children.map(ch => {
+        const escapedId = ch.node_id.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+        const escapedName = ch.name.replace(/[^a-zA-Z0-9_]/g, '_');
+        const actions = ch.is_variable
+            ? `<button class="sm secondary" onclick="quickMapTrigger('${escapedId}')">Set Trigger</button>
+               <button class="sm secondary" onclick="quickMapTag('header-tags-tbody', '${escapedName}', '${escapedId}')">+ Header Tag</button>
+               <button class="sm" onclick="quickMapTag('polled-tags-tbody', '${escapedName}', '${escapedId}')">+ 0.5s Tag</button>`
+            : `<button class="sm secondary" onclick="browsePlcNodes('${escapedId}')">Open Folder &rarr;</button>`;
+        return `<tr>
+            <td><strong>${ch.name}</strong> (ns=${ch.namespace_index})</td>
+            <td><code>${ch.node_class}</code></td>
+            <td><code>${ch.node_id}</code></td>
+            <td>${actions}</td>
+        </tr>`;
+    }).join('');
+}
+
+function quickMapTrigger(nodeId) {
+    document.getElementById('map-trigger-node').value = nodeId;
+    alert(`Set Trigger Node to: ${nodeId}\nGo to Tab 2 to review and click Save.`);
+}
+
+function quickMapTag(tbodyId, tagName, nodeId) {
+    addTagRow(tbodyId, tagName, nodeId);
+    alert(`Added ${tagName} -> ${nodeId}\nGo to Tab 2 to review and click Save.`);
+}
+
+async function testSingleAdhocNode() {
+    const nid = document.getElementById('adhoc-node-input').value.trim();
+    const out = document.getElementById('adhoc-node-result');
+    if (!nid) return;
+    out.textContent = 'Reading...';
+    const res = await fetch('/api/plc/test-nodes', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({node_ids: [nid], use_mock_plc: document.getElementById('cfg-mock').checked})
+    });
+    const data = await res.json();
+    if (!data.ok) {
+        out.style.color = '#dc2626';
+        out.textContent = `Error: ${data.error}`;
+        return;
+    }
+    const r = data.results[0];
+    out.style.color = r.is_good ? '#15803d' : '#dc2626';
+    out.textContent = `Status=${r.status_code} | Type=${r.variant_type} | Value=${JSON.stringify(r.value)}`;
+}
+
+// =====================================================================
+// TAB 2 & TAB 3: SCHEMA DATA MAPPING & VISUAL REPORT EDITOR
+// =====================================================================
+function addTagRow(tbodyId, tagName = '', nodeId = '') {
+    const tbody = document.getElementById(tbodyId);
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+        <td><input type="text" class="tag-key-input" value="${tagName}" placeholder="e.g. Temp_Zone1"></td>
+        <td><input type="text" class="tag-node-input" value="${nodeId.replace(/"/g, '&quot;')}" placeholder='ns=3;s="Cycle_Data"."Temp_Zone1"'></td>
+        <td class="tag-test-cell" style="font-family:monospace; font-size:0.79rem; color:#64748b;">Not tested</td>
+        <td><button class="danger sm" onclick="this.closest('tr').remove()">Remove</button></td>
+    `;
+    tbody.appendChild(tr);
+}
+
+async function testTriggerNode() {
+    const nid = document.getElementById('map-trigger-node').value.trim();
+    const out = document.getElementById('trigger-test-result');
+    if (!nid) return;
+    out.textContent = 'Reading from PLC...';
+    const res = await fetch('/api/plc/test-nodes', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({node_ids: [nid], use_mock_plc: document.getElementById('cfg-mock').checked})
+    });
+    const data = await res.json();
+    if (!data.ok || !data.results.length) {
+        out.innerHTML = `<span style="color:#dc2626;">Error: ${data.error}</span>`;
+        return;
+    }
+    const r = data.results[0];
+    out.innerHTML = r.is_good
+        ? `<span style="color:#15803d;font-weight:700;">GOOD</span> | Value=<code>${r.value}</code> (${r.variant_type})`
+        : `<span style="color:#dc2626;font-weight:700;">${r.status_code}</span>`;
+}
+
+async function testMappingTable(tbodyId) {
+    const rows = Array.from(document.querySelectorAll(`#${tbodyId} tr`));
+    const nodeIds = rows.map(r => r.querySelector('.tag-node-input').value.trim()).filter(Boolean);
+    if (!nodeIds.length) return;
+
+    const res = await fetch('/api/plc/test-nodes', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({node_ids: nodeIds, use_mock_plc: document.getElementById('cfg-mock').checked})
+    });
+    const data = await res.json();
+    if (!data.ok) {
+        rows.forEach(r => {
+            r.querySelector('.tag-test-cell').innerHTML = `<span style="color:#dc2626;">PLC Unreachable</span>`;
+        });
+        return;
+    }
+    const byNode = {};
+    data.results.forEach(item => { byNode[item.node_id] = item; });
+    rows.forEach(r => {
+        const nid = r.querySelector('.tag-node-input').value.trim();
+        const cell = r.querySelector('.tag-test-cell');
+        const info = byNode[nid];
+        if (!info) return;
+        if (info.is_good) {
+            cell.innerHTML = `<span style="color:#15803d;font-weight:700;">Good</span>: <code>${JSON.stringify(info.value)}</code> (${info.variant_type})`;
+        } else {
+            cell.innerHTML = `<span style="color:#dc2626;font-weight:700;">${info.status_code}</span>`;
+        }
+    });
+}
+
+function addChartBlock(chartData = null) {
+    const container = document.getElementById('charts-container');
+    const cid = chartData ? chartData.id : 'chart_' + (container.children.length + 1);
+    const title = chartData ? chartData.title : 'New Process Chart';
+    const ylabel = chartData ? chartData.y_axis_label : 'Value';
+
+    const div = document.createElement('div');
+    div.className = 'sub-box chart-block';
+    div.innerHTML = `
+        <div style="display:flex; gap:10px; align-items:flex-end; margin-bottom:10px;">
+            <div style="width:160px;">
+                <label style="font-size:0.75rem; font-weight:600;">Chart ID</label>
+                <input type="text" class="chart-id" value="${cid}">
+            </div>
+            <div style="flex:1;">
+                <label style="font-size:0.75rem; font-weight:600;">Chart Title</label>
+                <input type="text" class="chart-title" value="${title}">
+            </div>
+            <div style="width:200px;">
+                <label style="font-size:0.75rem; font-weight:600;">Y-Axis Label</label>
+                <input type="text" class="chart-ylabel" value="${ylabel}">
+            </div>
+            <button class="sm" onclick="addChartSeriesRow(this.closest('.chart-block').querySelector('.series-tbody'))">+ Add Line Series</button>
+            <button class="danger sm" onclick="this.closest('.chart-block').remove()">Delete Chart</button>
+        </div>
+        <table>
+            <thead>
+                <tr>
+                    <th>0.5s Tag Name</th>
+                    <th>Legend Label</th>
+                    <th>Unit</th>
+                    <th>Color</th>
+                    <th>Remove</th>
+                </tr>
+            </thead>
+            <tbody class="series-tbody"></tbody>
+        </table>
+    `;
+    container.appendChild(div);
+    const tbody = div.querySelector('.series-tbody');
+    if (chartData && chartData.series) {
+        chartData.series.forEach(s => addChartSeriesRow(tbody, s));
+    } else {
+        addChartSeriesRow(tbody);
+    }
+}
+
+function addChartSeriesRow(tbody, s = null) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+        <td><input type="text" class="s-tag" value="${s ? s.tag_name : 'Temp_Zone1'}"></td>
+        <td><input type="text" class="s-label" value="${s ? s.label : 'Zone 1 Temp'}"></td>
+        <td><input type="text" class="s-unit" value="${s ? (s.unit || '') : '°C'}" style="width:80px;"></td>
+        <td><input type="color" class="s-color" value="${s && s.color ? s.color : '#2563eb'}"></td>
+        <td><button class="danger sm" onclick="this.closest('tr').remove()">X</button></td>
+    `;
+    tbody.appendChild(tr);
+}
+
+function addParamTableBlock(tblData = null) {
+    const container = document.getElementById('tables-container');
+    const tid = tblData ? tblData.id : 'tbl_' + (container.children.length + 1);
+    const title = tblData ? tblData.title : 'Process Parameter Summary';
+
+    const div = document.createElement('div');
+    div.className = 'sub-box param-table-block';
+    div.innerHTML = `
+        <div style="display:flex; gap:10px; align-items:flex-end; margin-bottom:10px;">
+            <div style="width:180px;">
+                <label style="font-size:0.75rem; font-weight:600;">Table ID</label>
+                <input type="text" class="pt-id" value="${tid}">
+            </div>
+            <div style="flex:1;">
+                <label style="font-size:0.75rem; font-weight:600;">Table Section Title</label>
+                <input type="text" class="pt-title" value="${title}">
+            </div>
+            <button class="sm" onclick="addParamRow(this.closest('.param-table-block').querySelector('.param-tbody'))">+ Add Parameter Row</button>
+            <button class="danger sm" onclick="this.closest('.param-table-block').remove()">Delete Table</button>
+        </div>
+        <table>
+            <thead>
+                <tr>
+                    <th>0.5s Tag Name</th>
+                    <th>Parameter Display Label</th>
+                    <th>Unit</th>
+                    <th>Target Setpoint (optional)</th>
+                    <th>Tolerance ± (optional)</th>
+                    <th>Remove</th>
+                </tr>
+            </thead>
+            <tbody class="param-tbody"></tbody>
+        </table>
+    `;
+    container.appendChild(div);
+    const tbody = div.querySelector('.param-tbody');
+    if (tblData && tblData.parameters) {
+        tblData.parameters.forEach(p => addParamRow(tbody, p));
+    } else {
+        addParamRow(tbody);
+    }
+}
+
+function addParamRow(tbody, p = null) {
+    const tr = document.createElement('tr');
+    const sp = p && p.target_setpoint !== null && p.target_setpoint !== undefined ? p.target_setpoint : '';
+    const tol = p && p.tolerance !== null && p.tolerance !== undefined ? p.tolerance : '';
+    tr.innerHTML = `
+        <td><input type="text" class="p-tag" value="${p ? p.tag_name : 'Temp_Zone1'}"></td>
+        <td><input type="text" class="p-label" value="${p ? p.label : 'Zone 1 Temperature'}"></td>
+        <td><input type="text" class="p-unit" value="${p ? (p.unit || '') : '°C'}" style="width:80px;"></td>
+        <td><input type="number" step="any" class="p-sp" value="${sp}" placeholder="e.g. 185.0"></td>
+        <td><input type="number" step="any" class="p-tol" value="${tol}" placeholder="e.g. 5.0"></td>
+        <td><button class="danger sm" onclick="this.closest('tr').remove()">X</button></td>
+    `;
+    tbody.appendChild(tr);
+}
+
+function addAlarmRuleRow(a = null) {
+    const tbody = document.getElementById('alarm-rules-tbody');
+    const tr = document.createElement('tr');
+    const aid = a ? a.id : 'alm_' + (tbody.children.length + 1);
+    const cond = a ? a.condition : 'gt';
+    const sev = a ? a.severity : 'CRITICAL';
+    const th = a && a.threshold !== null && a.threshold !== undefined ? a.threshold : '';
+    tr.innerHTML = `
+        <td><input type="text" class="a-id" value="${aid}" style="width:95px;"></td>
+        <td><input type="text" class="a-tag" value="${a ? a.tag_name : 'Temp_Zone1'}" style="width:130px;"></td>
+        <td>
+            <select class="a-cond" style="width:105px;">
+                <option value="is_true" ${cond === 'is_true' ? 'selected' : ''}>== TRUE</option>
+                <option value="gt" ${cond === 'gt' ? 'selected' : ''}>&gt; (gt)</option>
+                <option value="gte" ${cond === 'gte' ? 'selected' : ''}>&gt;= (gte)</option>
+                <option value="lt" ${cond === 'lt' ? 'selected' : ''}>&lt; (lt)</option>
+                <option value="lte" ${cond === 'lte' ? 'selected' : ''}>&lt;= (lte)</option>
+            </select>
+        </td>
+        <td><input type="number" step="any" class="a-th" value="${th}" placeholder="195.0" style="width:90px;"></td>
+        <td>
+            <select class="a-sev" style="width:110px;">
+                <option value="CRITICAL" ${sev === 'CRITICAL' ? 'selected' : ''}>CRITICAL</option>
+                <option value="WARNING" ${sev === 'WARNING' ? 'selected' : ''}>WARNING</option>
+                <option value="INFO" ${sev === 'INFO' ? 'selected' : ''}>INFO</option>
+            </select>
+        </td>
+        <td><input type="text" class="a-label" value="${a ? a.label : 'High Temperature Limit Exceeded'}"></td>
+        <td><button class="danger sm" onclick="this.closest('tr').remove()">X</button></td>
+    `;
+    tbody.appendChild(tr);
+}
+
+async function loadActiveSchemaIntoUI() {
+    const res = await fetch('/api/schemas');
+    const schemas = await res.json();
+    if (!schemas.length) return;
+    const s = schemas[0];
+    activeSchemaId = s.id;
+
+    document.getElementById('map-trigger-node').value = s.trigger_node || '';
+    document.getElementById('rep-name').value = s.report_name || 'Default_S7_Cycle_Report';
+
+    const cfg = s.schema_config || {};
+    document.getElementById('rep-title').value = cfg.header_title || 'Automated Machine Cycle Report';
+    document.getElementById('rep-machine').value = cfg.machine_name || 'Siemens S7-1500 Line 1';
+    document.getElementById('rep-autoprint').checked = Boolean(cfg.auto_print);
+    document.getElementById('rep-printer').value = cfg.printer_name || '';
+
+    // Populate Header Tags
+    const hdrTbody = document.getElementById('header-tags-tbody');
+    hdrTbody.innerHTML = '';
+    Object.entries(cfg.header_tags || {}).forEach(([k, v]) => addTagRow('header-tags-tbody', k, v));
+
+    // Populate 0.5s Polled Tags
+    const pollTbody = document.getElementById('polled-tags-tbody');
+    pollTbody.innerHTML = '';
+    Object.entries(cfg.tags || {}).forEach(([k, v]) => addTagRow('polled-tags-tbody', k, v));
+
+    // Populate Charts
+    const chartsCont = document.getElementById('charts-container');
+    chartsCont.innerHTML = '';
+    (cfg.charts || []).forEach(c => addChartBlock(c));
+
+    // Populate Parameter Tables
+    const tablesCont = document.getElementById('tables-container');
+    tablesCont.innerHTML = '';
+    (cfg.parameter_tables || []).forEach(t => addParamTableBlock(t));
+
+    // Populate Alarm Rules
+    const almTbody = document.getElementById('alarm-rules-tbody');
+    almTbody.innerHTML = '';
+    (cfg.alarms || []).forEach(a => addAlarmRuleRow(a));
+}
+
+function collectSchemaPayloadFromUI() {
+    const header_tags = {};
+    document.querySelectorAll('#header-tags-tbody tr').forEach(tr => {
+        const k = tr.querySelector('.tag-key-input').value.trim();
+        const v = tr.querySelector('.tag-node-input').value.trim();
+        if (k && v) header_tags[k] = v;
+    });
+
+    const tags = {};
+    document.querySelectorAll('#polled-tags-tbody tr').forEach(tr => {
+        const k = tr.querySelector('.tag-key-input').value.trim();
+        const v = tr.querySelector('.tag-node-input').value.trim();
+        if (k && v) tags[k] = v;
+    });
+
+    const charts = [];
+    document.querySelectorAll('#charts-container .chart-block').forEach(blk => {
+        const series = [];
+        blk.querySelectorAll('.series-tbody tr').forEach(tr => {
+            const tag_name = tr.querySelector('.s-tag').value.trim();
+            const label = tr.querySelector('.s-label').value.trim();
+            if (tag_name && label) {
+                series.push({
+                    tag_name,
+                    label,
+                    unit: tr.querySelector('.s-unit').value.trim(),
+                    color: tr.querySelector('.s-color').value
+                });
+            }
+        });
+        if (series.length) {
+            charts.push({
+                id: blk.querySelector('.chart-id').value.trim() || 'chart_1',
+                title: blk.querySelector('.chart-title').value.trim() || 'Process Chart',
+                y_axis_label: blk.querySelector('.chart-ylabel').value.trim() || 'Value',
+                series
+            });
+        }
+    });
+
+    const parameter_tables = [];
+    document.querySelectorAll('#tables-container .param-table-block').forEach(blk => {
+        const parameters = [];
+        blk.querySelectorAll('.param-tbody tr').forEach(tr => {
+            const tag_name = tr.querySelector('.p-tag').value.trim();
+            const label = tr.querySelector('.p-label').value.trim();
+            const spRaw = tr.querySelector('.p-sp').value.trim();
+            const tolRaw = tr.querySelector('.p-tol').value.trim();
+            if (tag_name && label) {
+                parameters.push({
+                    tag_name,
+                    label,
+                    unit: tr.querySelector('.p-unit').value.trim(),
+                    aggregations: ['min', 'max', 'avg'],
+                    target_setpoint: spRaw !== '' ? parseFloat(spRaw) : null,
+                    tolerance: tolRaw !== '' ? parseFloat(tolRaw) : null
+                });
+            }
+        });
+        if (parameters.length) {
+            parameter_tables.push({
+                id: blk.querySelector('.pt-id').value.trim() || 'tbl_1',
+                title: blk.querySelector('.pt-title').value.trim() || 'Parameter Summary',
+                parameters
+            });
+        }
+    });
+
+    const alarms = [];
+    document.querySelectorAll('#alarm-rules-tbody tr').forEach(tr => {
+        const tag_name = tr.querySelector('.a-tag').value.trim();
+        const label = tr.querySelector('.a-label').value.trim();
+        const thRaw = tr.querySelector('.a-th').value.trim();
+        if (tag_name && label) {
+            alarms.push({
+                id: tr.querySelector('.a-id').value.trim() || 'alm_1',
+                tag_name,
+                label,
+                condition: tr.querySelector('.a-cond').value,
+                threshold: thRaw !== '' ? parseFloat(thRaw) : null,
+                severity: tr.querySelector('.a-sev').value
+            });
+        }
+    });
+
+    return {
+        report_name: document.getElementById('rep-name').value.trim() || 'Default_S7_Cycle_Report',
+        description: 'Configured via S7-1500 Web Report Designer',
+        trigger_node: document.getElementById('map-trigger-node').value.trim() || 'ns=3;s="Cycle_Control"."Cycle_Active"',
+        is_active: true,
+        schema_config: {
+            header_title: document.getElementById('rep-title').value.trim() || 'Automated Machine Cycle Report',
+            machine_name: document.getElementById('rep-machine').value.trim() || 'S7-1500 Line 1',
+            auto_print: document.getElementById('rep-autoprint').checked,
+            printer_name: document.getElementById('rep-printer').value.trim() || null,
+            header_tags,
+            tags,
+            charts,
+            parameter_tables,
+            alarms
+        }
+    };
+}
+
+async function saveFullSchema() {
+    if (!activeSchemaId) return;
+    const payload = collectSchemaPayloadFromUI();
+    const res = await fetch(`/api/schemas/${activeSchemaId}?reload_poller=true`, {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+    });
+    const m1 = document.getElementById('mapping-save-msg');
+    const m2 = document.getElementById('report-save-msg');
+    if (res.ok) {
+        m1.textContent = m2.textContent = 'Saved & applied to live OPC-UA poller!';
+        setTimeout(() => { m1.textContent = m2.textContent = ''; }, 3000);
+        refreshStatus();
+    } else {
+        const err = await res.json();
+        alert('Error saving schema: ' + JSON.stringify(err.detail));
+    }
+}
+
+// =====================================================================
+// TAB 4: CYCLES, CSV ALARMS & SIMULATION
+// =====================================================================
+async function loadCyclesAndAlarms() {
+    const cyclesRes = await fetch('/api/cycles?limit=25');
+    const cycles = await cyclesRes.json();
+    const cTbody = document.getElementById('cycles-tbody');
+    if (!cycles.length) {
+        cTbody.innerHTML = '<tr><td colspan="7" style="color:#64748b;">No cycles recorded yet.</td></tr>';
+    } else {
+        cTbody.innerHTML = cycles.map(c => {
             const hdr = c.header_data ? JSON.stringify(c.header_data) : '—';
-            const pdfBtn = c.pdf_file_path
-                ? `<a href="/api/cycles/${c.id}/pdf" target="_blank"><button style="padding:4px 10px; font-size:0.78rem;">Open PDF</button></a>`
-                : `<button class="secondary" style="padding:4px 10px; font-size:0.78rem;" onclick="regenPdf(${c.id})">Generate PDF</button>`;
+            const openBtn = c.pdf_file_path
+                ? `<a href="/api/cycles/${c.id}/pdf" target="_blank"><button class="sm">Open PDF</button></a>`
+                : '';
             return `<tr>
                 <td><strong>#${c.id}</strong></td>
                 <td><code>${c.batch_number || 'N/A'}</code></td>
                 <td><code>${hdr}</code></td>
-                <td>${c.start_time ? c.start_time.slice(11, 23) : '—'}</td>
-                <td>${c.end_time ? c.end_time.slice(11, 23) : 'RUNNING'}</td>
+                <td>${c.start_time ? c.start_time.slice(0, 19).replace('T', ' ') : '—'}</td>
+                <td>${c.end_time ? c.end_time.slice(0, 19).replace('T', ' ') : 'RUNNING'}</td>
                 <td><strong>${c.status}</strong></td>
-                <td>${pdfBtn}</td>
+                <td style="display:flex; gap:6px;">
+                    ${openBtn}
+                    <button class="secondary sm" onclick="regeneratePdf(${c.id})">Regenerate PDF</button>
+                </td>
             </tr>`;
         }).join('');
     }
 
-    const alarmsRes = await fetch('/api/alarms?limit=15');
+    const alarmsRes = await fetch('/api/alarms?limit=25');
     const alarms = await alarmsRes.json();
-    const alarmsTbody = document.getElementById('alarms-tbody');
+    const aTbody = document.getElementById('csv-alarms-tbody');
     if (!alarms.length) {
-        alarmsTbody.innerHTML = '<tr><td colspan="7" style="color:#64748b;">No CSV alarms ingested yet.</td></tr>';
+        aTbody.innerHTML = '<tr><td colspan="7" style="color:#64748b;">No CSV alarms ingested yet.</td></tr>';
     } else {
-        alarmsTbody.innerHTML = alarms.map(a => `<tr>
+        aTbody.innerHTML = alarms.map(a => `<tr>
             <td>${a.id}</td>
             <td>${a.cycle_id ? '#' + a.cycle_id : 'Unassigned'}</td>
-            <td>${a.timestamp.slice(11, 23)}</td>
+            <td>${a.timestamp.slice(0, 19).replace('T', ' ')}</td>
             <td><code>${a.alarm_code}</code></td>
             <td><strong>${a.severity}</strong></td>
             <td>${a.alarm_text}</td>
@@ -249,78 +1216,48 @@ async function refreshDashboard() {
     }
 }
 
-async function loadSchema() {
-    const res = await fetch('/api/schemas');
-    const schemas = await res.json();
-    if (schemas.length) {
-        currentSchemaId = schemas[0].id;
-        document.getElementById('schema-editor').value = JSON.stringify(schemas[0].schema_config, null, 2);
-    }
-}
-
-async function saveSchema() {
-    if (!currentSchemaId) return;
-    const statusEl = document.getElementById('schema-status');
-    try {
-        const parsed = JSON.parse(document.getElementById('schema-editor').value);
-        const schemaRes = await fetch(`/api/schemas/${currentSchemaId}`);
-        const current = await schemaRes.json();
-        const putRes = await fetch(`/api/schemas/${currentSchemaId}`, {
-            method: 'PUT',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-                report_name: current.report_name,
-                description: current.description,
-                trigger_node: current.trigger_node,
-                is_active: true,
-                schema_config: parsed
-            })
-        });
-        if (putRes.ok) {
-            statusEl.textContent = 'Saved!';
-            setTimeout(() => statusEl.textContent = '', 2000);
-        } else {
-            statusEl.textContent = 'Validation error';
-        }
-    } catch (e) {
-        statusEl.textContent = 'Invalid JSON';
-    }
-}
-
 async function simulateCycle(withCsvAlarm) {
-    const batch = document.getElementById('batch-input').value || 'BATCH-001';
-    const msgEl = document.getElementById('sim-status');
-    msgEl.textContent = `Starting simulated PLC cycle (Batch=${batch}, CSV Alarm=${withCsvAlarm})...`;
-    await fetch('/api/prototype/simulate-cycle', {
+    const batch = document.getElementById('sim-batch').value || 'BATCH-2026-101';
+    const msg = document.getElementById('sim-msg');
+    const res = await fetch('/api/prototype/simulate-cycle', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({batch_number: batch, drop_csv_alarm: withCsvAlarm})
     });
-    // Increment batch number for convenience
+    if (!res.ok) {
+        const err = await res.json();
+        alert(err.detail);
+        return;
+    }
+    msg.textContent = `Running simulated cycle (${batch})...`;
     const match = batch.match(/^(.*?)(\d+)$/);
     if (match) {
-        document.getElementById('batch-input').value = match[1] + String(parseInt(match[2], 10) + 1).padStart(match[2].length, '0');
+        document.getElementById('sim-batch').value = match[1] + String(parseInt(match[2], 10) + 1).padStart(match[2].length, '0');
     }
-    setTimeout(refreshDashboard, 600);
-    setTimeout(() => { msgEl.textContent = 'Cycle finished & PDF report generated!'; refreshDashboard(); }, 3800);
+    setTimeout(loadCyclesAndAlarms, 800);
+    setTimeout(() => { msg.textContent = 'Cycle completed & PDF generated!'; loadCyclesAndAlarms(); }, 3600);
 }
 
 async function dropSampleCsv() {
-    const msgEl = document.getElementById('sim-status');
+    const msg = document.getElementById('sim-msg');
     const res = await fetch('/api/prototype/drop-csv', {method: 'POST'});
     const data = await res.json();
-    msgEl.textContent = `Dropped '${data.filename}' -> Watchdog ingested & moved to .bckup!`;
-    setTimeout(refreshDashboard, 400);
+    msg.textContent = `Dropped '${data.filename}' -> Watchdog ingested & moved to .bckup!`;
+    setTimeout(loadCyclesAndAlarms, 500);
 }
 
-async function regenPdf(cycleId) {
+async function regeneratePdf(cycleId) {
     await fetch(`/api/cycles/${cycleId}/generate-report`, {method: 'POST'});
-    await refreshDashboard();
+    await loadCyclesAndAlarms();
 }
 
-loadSchema();
-refreshDashboard();
-setInterval(refreshDashboard, 2000);
+// Initialize UI
+loadSystemConfig();
+loadActiveSchemaIntoUI();
+refreshStatus();
+loadCyclesAndAlarms();
+setInterval(refreshStatus, 2000);
 </script>
+
 </body>
 </html>

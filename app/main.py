@@ -1,12 +1,13 @@
 """
-FastAPI Prototype Application for the Siemens S7-1500 OPC-UA Cycle Reporting System.
+FastAPI Backend for the Siemens S7-1500 OPC-UA Cycle Reporting Application.
 
-Integrates:
-1. Simple Web Dashboard (`GET /`) & Report Designer REST API (`/api/schemas`)
-2. Non-Redundant OPC-UA Polling (`header_tags` read ONCE on cycle start for Batch_Number;
-   dynamic `tags` bulk-polled every 0.5s)
-3. Watchdog CSV Alarm Folder Monitor (`app/csv_watcher.py`) moving processed CSVs to `.bckup/`
-4. Automated Pandas + Matplotlib + Jinja2 + WeasyPrint PDF Report Generation
+Ready for testing against a real S7-1500 PLC (or optional local mock PLC):
+1. Live PLC Connection Configuration & Hot-Reloading (`/api/config`, `/api/poller/*`)
+2. Live PLC Diagnostics: Connection Probe, Bulk Node Value/StatusCode Tester,
+   and OPC-UA Address Space Browser (`/api/plc/*`)
+3. Visual Data Mapping & Report Schema Editor (`/api/schemas`)
+4. Watchdog CSV Alarm Folder Monitor (`app/csv_watcher.py`) moving processed CSVs to `.bckup/`
+5. Automated Pandas + Matplotlib + Jinja2 + WeasyPrint PDF Report Generation
 """
 
 import asyncio
@@ -33,38 +34,89 @@ from app.models import (
     CycleStatus,
     CycleTimeSeries,
     ReportSchema,
+    SystemConfig,
 )
-from app.opc_client import CyclePollerConfig, S7CyclePoller
+from app.opc_client import (
+    CyclePollerConfig,
+    S7CyclePoller,
+    browse_plc_node,
+    probe_plc_connection,
+    test_read_plc_nodes,
+)
 from app.report_generator import TEMPLATES_DIR, generate_cycle_pdf_report
 from app.schemas import (
     ChartElementSchema,
     ChartSeriesSchema,
     CycleAlarmLogRead,
     CycleRecordRead,
+    PLCConnectionTestRequest,
+    PLCNodeTestRequest,
     ParameterRowSchema,
     ParameterTableElementSchema,
     ReportLayoutConfig,
     ReportSchemaCreate,
     ReportSchemaRead,
+    SystemConfigRead,
+    SystemConfigUpdate,
 )
 
 logger = logging.getLogger(__name__)
 
-# Prototype runtime state
+# Runtime background service references
+MOCK_PLC_ENDPOINT = "opc.tcp://127.0.0.1:48440"
 _csv_watcher: Optional[AlarmCSVWatcherService] = None
 _poller: Optional[S7CyclePoller] = None
 _poller_task: Optional[asyncio.Task[Any]] = None
 _mock_plc: Optional[Any] = None
+_service_lock = asyncio.Lock()
+
+
+async def ensure_mock_plc_running() -> str:
+    """
+    Start the embedded MockS71500Server if it is not already running.
+    If port 48440 is already bound by an active MockS71500Server process,
+    reuse `MOCK_PLC_ENDPOINT` immediately without attempting to re-bind.
+    """
+    global _mock_plc
+    if _mock_plc is not None:
+        return _mock_plc.endpoint
+
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(0.1)
+        if sock.connect_ex(("127.0.0.1", 48440)) == 0:
+            return MOCK_PLC_ENDPOINT
+
+    from tests.mock_s7_server import MockS71500Server
+
+    candidate = MockS71500Server(endpoint=MOCK_PLC_ENDPOINT)
+    try:
+        await candidate.__aenter__()
+        _mock_plc = candidate
+        return _mock_plc.endpoint
+    except OSError:
+        return MOCK_PLC_ENDPOINT
+
+
+async def stop_mock_plc_running() -> None:
+    """Stop the embedded MockS71500Server if running."""
+    global _mock_plc
+    if _mock_plc is not None:
+        await _mock_plc.__aexit__(None, None, None)
+        _mock_plc = None
 
 
 async def ensure_default_report_schema() -> ReportSchema:
     """
-    Seed a clean default ReportSchema if the database is empty.
-    Demonstrates separating `header_tags` (read ONCE at cycle start, e.g. Batch_Number)
+    Seed a default ReportSchema if the database is empty.
+    Separates `header_tags` (read ONCE at cycle start, e.g. Batch_Number)
     from `tags` (polled every 0.5s during an active cycle).
     """
     async with get_Session_context() as session:
-        res = await session.execute(select(ReportSchema).order_by(ReportSchema.id).limit(1))
+        res = await session.execute(
+            select(ReportSchema).order_by(ReportSchema.id).limit(1)
+        )
         existing = res.scalar_one_or_none()
         if existing is not None:
             return existing
@@ -72,7 +124,7 @@ async def ensure_default_report_schema() -> ReportSchema:
         default_layout = ReportLayoutConfig(
             header_title="Siemens S7-1500 Machine Cycle Report",
             machine_name="S7-1500 Line #1",
-            auto_print=True,
+            auto_print=False,
             printer_name="Factory_Default_Printer",
             header_tags={
                 "Batch_Number": 'ns=3;s="Cycle_Data"."Batch_Number"',
@@ -157,7 +209,7 @@ async def ensure_default_report_schema() -> ReportSchema:
 
         schema_row = ReportSchema(
             report_name="Default_S7_Cycle_Report",
-            description="Prototype schema with one-shot Batch_Number header read & 0.5s bulk polling.",
+            description="S7-1500 schema with one-shot Batch_Number header read & 0.5s bulk polling.",
             trigger_node='ns=3;s="Cycle_Control"."Cycle_Active"',
             schema_config=default_layout.model_dump(),
             is_active=True,
@@ -167,61 +219,156 @@ async def ensure_default_report_schema() -> ReportSchema:
         return schema_row
 
 
-@asynccontextmanager
-async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
+async def ensure_system_config(default_schema_id: int) -> SystemConfig:
+    """Load or create the singleton `SystemConfig` row (id=1)."""
+    async with get_Session_context() as session:
+        res = await session.execute(
+            select(SystemConfig).order_by(SystemConfig.id).limit(1)
+        )
+        cfg = res.scalar_one_or_none()
+        if cfg is not None:
+            if cfg.active_schema_id is None:
+                cfg.active_schema_id = default_schema_id
+            return cfg
+
+        env_endpoint = os.getenv("OPCUA_ENDPOINT_URL", "opc.tcp://192.168.0.1:4840")
+        env_interval = float(os.getenv("OPCUA_POLL_INTERVAL_SECONDS", "0.5"))
+        env_watch_dir = os.getenv("ALARM_CSV_WATCH_DIR", str(DEFAULT_WATCH_DIR))
+        env_mock = os.getenv("USE_MOCK_PLC", "true").lower() == "true"
+
+        cfg = SystemConfig(
+            opcua_endpoint_url=env_endpoint,
+            opcua_username=os.getenv("OPCUA_USERNAME") or None,
+            opcua_password=os.getenv("OPCUA_PASSWORD") or None,
+            poll_interval_seconds=env_interval,
+            csv_watch_dir=env_watch_dir,
+            use_mock_plc=env_mock,
+            active_schema_id=default_schema_id,
+        )
+        session.add(cfg)
+        await session.flush()
+        return cfg
+
+
+async def stop_poller_service(stop_mock: bool = False) -> None:
+    """Cleanly stop the running `S7CyclePoller` (and optionally the embedded mock PLC)."""
+    global _poller, _poller_task
+    if _poller is not None:
+        await _poller.stop()
+        _poller = None
+    if _poller_task is not None:
+        _poller_task.cancel()
+        await asyncio.gather(_poller_task, return_exceptions=True)
+        _poller_task = None
+    if stop_mock:
+        await stop_mock_plc_running()
+
+
+async def restart_runtime_services(start_poller: bool = True) -> dict[str, Any]:
     """
-    Start database, default schema, Watchdog CSV monitor, and prototype OPC-UA poller.
+    Reload `SystemConfig` and the active `ReportSchema` from the database,
+    reconfigure `AlarmCSVWatcherService`, and start/restart `S7CyclePoller`.
     """
-    global _csv_watcher, _poller, _poller_task, _mock_plc
+    global _csv_watcher, _poller, _poller_task
 
-    await init_db()
-    default_schema = await ensure_default_report_schema()
+    async with _service_lock:
+        await stop_poller_service(stop_mock=False)
 
-    # Start Watchdog CSV watcher on ./watched_alarms
-    _csv_watcher = AlarmCSVWatcherService(
-        watch_dir=DEFAULT_WATCH_DIR,
-        active_cycle_id_provider=lambda: _poller.active_cycle_id if _poller else None,
-    )
-    await _csv_watcher.start()
+        async with get_Session_context() as session:
+            cfg_res = await session.execute(
+                select(SystemConfig).order_by(SystemConfig.id).limit(1)
+            )
+            sys_cfg = cfg_res.scalar_one()
 
-    # Start embedded Mock S7-1500 server + S7CyclePoller unless disabled
-    if os.getenv("DISABLE_BACKGROUND_POLLER", "false").lower() != "true":
-        from tests.mock_s7_server import MockS71500Server
+            schema_obj: Optional[ReportSchema] = None
+            if sys_cfg.active_schema_id:
+                schema_obj = await session.get(ReportSchema, sys_cfg.active_schema_id)
+            if schema_obj is None:
+                s_res = await session.execute(
+                    select(ReportSchema).order_by(ReportSchema.id).limit(1)
+                )
+                schema_obj = s_res.scalar_one()
+                sys_cfg.active_schema_id = schema_obj.id
 
-        endpoint = os.getenv("OPCUA_ENDPOINT_URL", "opc.tcp://127.0.0.1:48440")
-        if endpoint.startswith("opc.tcp://127.0.0.1"):
-            _mock_plc = MockS71500Server(endpoint=endpoint)
-            await _mock_plc.__aenter__()
+            endpoint_url = sys_cfg.opcua_endpoint_url
+            username = sys_cfg.opcua_username
+            password = sys_cfg.opcua_password
+            poll_interval = sys_cfg.poll_interval_seconds
+            watch_dir_str = sys_cfg.csv_watch_dir
+            use_mock = sys_cfg.use_mock_plc
+
+            schema_id = schema_obj.id
+            trigger_node = schema_obj.trigger_node
+            header_nodes = schema_obj.extract_header_nodes()
+            polled_nodes = schema_obj.extract_polled_nodes()
+
+        # Reconfigure or start CSV Watcher
+        if _csv_watcher is not None:
+            await _csv_watcher.stop()
+        _csv_watcher = AlarmCSVWatcherService(
+            watch_dir=watch_dir_str,
+            active_cycle_id_provider=lambda: _poller.active_cycle_id if _poller else None,
+        )
+        await _csv_watcher.start()
+
+        # Manage embedded MockS71500Server lifecycle based on use_mock flag
+        if use_mock:
+            endpoint_url = await ensure_mock_plc_running()
+            username = None
+            password = None
+        else:
+            await stop_mock_plc_running()
+
+        if not start_poller:
+            return {"poller_running": False, "endpoint_url": endpoint_url}
 
         poller_cfg = CyclePollerConfig(
-            report_schema_id=default_schema.id,
-            trigger_node_id=default_schema.trigger_node,
-            header_nodes_map=default_schema.extract_header_nodes(),
-            data_nodes_map=default_schema.extract_polled_nodes(),
-            poll_interval=0.5,
+            report_schema_id=schema_id,
+            trigger_node_id=trigger_node,
+            header_nodes_map=header_nodes,
+            data_nodes_map=polled_nodes,
+            poll_interval=poll_interval,
             persist_to_db=True,
             auto_generate_pdf=True,
         )
-        _poller = S7CyclePoller(endpoint_url=endpoint, config=poller_cfg)
-        _poller_task = asyncio.create_task(_poller.start(), name="prototype-opc-poller")
+        _poller = S7CyclePoller(
+            endpoint_url=endpoint_url,
+            config=poller_cfg,
+            username=username,
+            password=password,
+        )
+        _poller_task = asyncio.create_task(
+            _poller.start(), name="s7-opc-poller-task"
+        )
+        return {
+            "poller_running": True,
+            "endpoint_url": endpoint_url,
+            "use_mock_plc": use_mock,
+            "active_schema_id": schema_id,
+        }
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
+    """Initialize database, default schema, system config, and background services."""
+    await init_db()
+    default_schema = await ensure_default_report_schema()
+    await ensure_system_config(default_schema.id)
+
+    auto_start = os.getenv("DISABLE_BACKGROUND_POLLER", "false").lower() != "true"
+    await restart_runtime_services(start_poller=auto_start)
 
     try:
         yield
     finally:
-        if _poller is not None:
-            await _poller.stop()
-        if _poller_task is not None:
-            _poller_task.cancel()
-            await asyncio.gather(_poller_task, return_exceptions=True)
-        if _mock_plc is not None:
-            await _mock_plc.__aexit__(None, None, None)
+        await stop_poller_service(stop_mock=True)
         if _csv_watcher is not None:
             await _csv_watcher.stop()
 
 
 app = FastAPI(
-    title="Siemens S7-1500 OPC-UA Cycle Reporting Prototype",
-    version="1.0.0",
+    title="Siemens S7-1500 OPC-UA Cycle Reporting System",
+    version="1.1.0",
     lifespan=lifespan,
 )
 
@@ -235,8 +382,8 @@ app.add_middleware(
 
 
 @app.get("/", response_class=HTMLResponse, include_in_schema=False)
-async def prototype_dashboard() -> HTMLResponse:
-    """Serve the simple single-page Prototype Dashboard UI."""
+async def ui_dashboard() -> HTMLResponse:
+    """Serve the Web UI for PLC Configuration, Tag Mapping, and Report Editing."""
     html_path = TEMPLATES_DIR / "dashboard.html"
     return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
 
@@ -248,7 +395,181 @@ async def health_check() -> dict[str, str]:
 
 
 # =========================================================================
-# Prototype Control & Status Endpoints
+# System Configuration & Live PLC Diagnostics Endpoints
+# =========================================================================
+
+
+@app.get(
+    "/api/config",
+    response_model=SystemConfigRead,
+    tags=["PLC & System Config"],
+)
+async def get_system_config(
+    db: AsyncSession = Depends(get_db_session),
+) -> SystemConfig:
+    """Retrieve current PLC endpoint, polling, and CSV watch folder settings."""
+    res = await db.execute(select(SystemConfig).order_by(SystemConfig.id).limit(1))
+    cfg = res.scalar_one_or_none()
+    if cfg is None:
+        default_schema = await ensure_default_report_schema()
+        return await ensure_system_config(default_schema.id)
+    return cfg
+
+
+@app.put(
+    "/api/config",
+    response_model=SystemConfigRead,
+    tags=["PLC & System Config"],
+)
+async def update_system_config(
+    payload: SystemConfigUpdate,
+    restart_poller: bool = Query(default=True),
+    db: AsyncSession = Depends(get_db_session),
+) -> SystemConfig:
+    """
+    Update PLC connection settings (`opcua_endpoint_url`, credentials, `poll_interval_seconds`,
+    `csv_watch_dir`, `use_mock_plc`, `active_schema_id`) and hot-reload the poller.
+    """
+    res = await db.execute(select(SystemConfig).order_by(SystemConfig.id).limit(1))
+    cfg = res.scalar_one()
+
+    cfg.opcua_endpoint_url = payload.opcua_endpoint_url.strip()
+    cfg.opcua_username = (
+        payload.opcua_username.strip() if payload.opcua_username else None
+    )
+    cfg.opcua_password = (
+        payload.opcua_password if payload.opcua_password else None
+    )
+    cfg.poll_interval_seconds = payload.poll_interval_seconds
+    cfg.csv_watch_dir = payload.csv_watch_dir.strip()
+    cfg.use_mock_plc = payload.use_mock_plc
+    if payload.active_schema_id is not None:
+        cfg.active_schema_id = payload.active_schema_id
+
+    await db.commit()
+    await db.refresh(cfg)
+
+    if restart_poller:
+        await restart_runtime_services(start_poller=True)
+
+    return cfg
+
+
+@app.post("/api/poller/restart", tags=["PLC & System Config"])
+async def api_restart_poller() -> dict[str, Any]:
+    """Start or restart the OPC-UA poller with current DB configuration."""
+    return await restart_runtime_services(start_poller=True)
+
+
+@app.post("/api/poller/stop", tags=["PLC & System Config"])
+async def api_stop_poller() -> dict[str, Any]:
+    """Stop the background OPC-UA poller."""
+    async with _service_lock:
+        await stop_poller_service()
+    return {"poller_running": False, "poller_state": "STOPPED"}
+
+
+async def _resolve_plc_connection_params(
+    db: AsyncSession,
+    override_url: Optional[str] = None,
+    override_user: Optional[str] = None,
+    override_pass: Optional[str] = None,
+    override_use_mock: Optional[bool] = None,
+) -> tuple[str, Optional[str], Optional[str]]:
+    """
+    Resolve effective PLC connection parameters for diagnostic calls.
+    If Mock PLC mode is enabled (either in DB config or checked in the UI),
+    automatically starts the embedded MockS71500Server and returns its endpoint.
+    """
+    res = await db.execute(select(SystemConfig).order_by(SystemConfig.id).limit(1))
+    cfg = res.scalar_one()
+
+    use_mock = (
+        override_use_mock if override_use_mock is not None else cfg.use_mock_plc
+    )
+    if use_mock:
+        mock_ep = await ensure_mock_plc_running()
+        return mock_ep, None, None
+
+    if _poller is not None and not override_url:
+        url = _poller.endpoint_url
+    else:
+        url = (override_url or cfg.opcua_endpoint_url).strip()
+    user = override_user if override_user is not None else cfg.opcua_username
+    pw = override_pass if override_pass is not None else cfg.opcua_password
+    return url, user, pw
+
+
+@app.post("/api/plc/test-connection", tags=["PLC Diagnostics & Browsing"])
+async def api_test_plc_connection(
+    req: PLCConnectionTestRequest,
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    """
+    Test connection to the real (or mock) Siemens S7-1500 PLC OPC-UA server,
+    returning round-trip latency and server namespaces.
+    """
+    url, user, pw = await _resolve_plc_connection_params(
+        db,
+        req.opcua_endpoint_url,
+        req.opcua_username,
+        req.opcua_password,
+        req.use_mock_plc,
+    )
+    return await probe_plc_connection(url, user, pw)
+
+
+@app.post("/api/plc/test-nodes", tags=["PLC Diagnostics & Browsing"])
+async def api_test_plc_nodes(
+    req: PLCNodeTestRequest,
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    """
+    Execute a live bulk read of the specified OPC-UA NodeIds on the PLC and return
+    each tag's current value, data type, and OPC-UA StatusCode (`Good` vs `BadNodeIdUnknown`).
+    """
+    url, user, pw = await _resolve_plc_connection_params(
+        db,
+        req.opcua_endpoint_url,
+        req.opcua_username,
+        req.opcua_password,
+        req.use_mock_plc,
+    )
+    try:
+        results = await test_read_plc_nodes(url, req.node_ids, user, pw)
+        return {"ok": True, "endpoint_url": url, "results": results, "error": None}
+    except Exception as exc:
+        return {"ok": False, "endpoint_url": url, "results": [], "error": str(exc)}
+
+
+@app.get("/api/plc/browse", tags=["PLC Diagnostics & Browsing"])
+async def api_browse_plc(
+    parent_node_id: Optional[str] = Query(default=None),
+    use_mock_plc: Optional[bool] = Query(default=None),
+    db: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    """
+    Browse child nodes of `parent_node_id` (or root `Objects` folder if omitted)
+    on the configured S7-1500 PLC.
+    """
+    url, user, pw = await _resolve_plc_connection_params(
+        db, override_use_mock=use_mock_plc
+    )
+    try:
+        data = await browse_plc_node(url, parent_node_id, user, pw)
+        return {"ok": True, "endpoint_url": url, **data, "error": None}
+    except Exception as exc:
+        return {
+            "ok": False,
+            "endpoint_url": url,
+            "parent_node_id": parent_node_id,
+            "children": [],
+            "error": str(exc),
+        }
+
+
+# =========================================================================
+# Runtime Status & Local Simulation Helpers
 # =========================================================================
 
 
@@ -258,10 +579,12 @@ class SimulateCycleRequest(BaseModel):
     drop_csv_alarm: bool = False
 
 
-@app.get("/api/prototype/status", tags=["Prototype"])
+@app.get("/api/prototype/status", tags=["PLC & System Config"])
 async def get_prototype_status() -> dict[str, Any]:
-    """Return live OPC-UA poller state and Watchdog CSV `.bckup` status."""
-    watch_dir = _csv_watcher.watch_dir if _csv_watcher else DEFAULT_WATCH_DIR.resolve()
+    """Return live OPC-UA poller state, connection diagnostics, and Watchdog CSV status."""
+    watch_dir = (
+        _csv_watcher.watch_dir if _csv_watcher else DEFAULT_WATCH_DIR.resolve()
+    )
     bckup_dir = watch_dir / ".bckup"
     backup_files = (
         sorted(p.name for p in bckup_dir.glob("*.csv"))
@@ -269,19 +592,36 @@ async def get_prototype_status() -> dict[str, Any]:
         else []
     )
     return {
+        "poller_running": _poller is not None,
         "poller_state": _poller.state.value if _poller else "STOPPED",
+        "is_connected": _poller.is_connected if _poller else False,
+        "endpoint_url": _poller.endpoint_url if _poller else None,
+        "last_error": _poller.last_error if _poller else None,
+        "invalid_data_nodes": _poller.invalid_data_nodes if _poller else {},
+        "reconnect_count": _poller.reconnect_count if _poller else 0,
         "active_cycle_id": _poller.active_cycle_id if _poller else None,
+        "active_header_data": _poller.active_header_data if _poller else {},
+        "mock_plc_active": (
+            _mock_plc is not None
+            or bool(_poller and _poller.endpoint_url == MOCK_PLC_ENDPOINT)
+        ),
         "watch_dir": str(watch_dir),
         "backup_files": backup_files,
-        "processed_csv_files_count": _csv_watcher.processed_files_count if _csv_watcher else 0,
-        "ingested_alarms_count": _csv_watcher.ingested_alarms_count if _csv_watcher else 0,
+        "processed_csv_files_count": (
+            _csv_watcher.processed_files_count if _csv_watcher else 0
+        ),
+        "ingested_alarms_count": (
+            _csv_watcher.ingested_alarms_count if _csv_watcher else 0
+        ),
     }
 
 
 @app.post("/api/prototype/drop-csv", tags=["Prototype"])
 async def drop_sample_csv_alarm() -> dict[str, Any]:
-    """Drop a sample alarm CSV file into the watched folder to trigger Watchdog ingestion."""
-    watch_dir = _csv_watcher.watch_dir if _csv_watcher else DEFAULT_WATCH_DIR.resolve()
+    """Drop a sample alarm CSV file into the watched folder to test Watchdog ingestion."""
+    watch_dir = (
+        _csv_watcher.watch_dir if _csv_watcher else DEFAULT_WATCH_DIR.resolve()
+    )
     watch_dir.mkdir(parents=True, exist_ok=True)
 
     now_utc = datetime.now(timezone.utc)
@@ -299,36 +639,56 @@ async def drop_sample_csv_alarm() -> dict[str, Any]:
 
 @app.post("/api/prototype/simulate-cycle", tags=["Prototype"])
 async def trigger_simulated_plc_cycle(req: SimulateCycleRequest) -> dict[str, Any]:
-    """
-    Simulate a 2.0-second machine cycle on the embedded S7-1500 mock PLC:
-    1. Sets `Batch_Number` and `Recipe_Name` on the PLC before rising edge.
-    2. Sets `Cycle_Active = True` (poller reads `Batch_Number` ONCE, then polls 0.5s data).
-    3. Optionally drops a CSV alarm file mid-cycle into `watched_alarms/`.
-    4. Sets `Cycle_Active = False` -> triggers automatic PDF generation.
-    """
-    if _mock_plc is None:
+    """Simulate a machine cycle when running in Mock PLC mode."""
+    if _mock_plc is None and not (
+        _poller and _poller.endpoint_url == MOCK_PLC_ENDPOINT
+    ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Embedded Mock S7-1500 server is not active.",
+            detail="Local Mock PLC is not enabled. Enable 'Use Embedded Mock S7-1500 Server' in Tab 1 to simulate cycles without a physical PLC.",
         )
 
     async def _run_cycle() -> None:
-        await _mock_plc.update_process_values(
-            step=1,
-            recipe_name=req.recipe_name,
-            batch_number=req.batch_number,
-        )
-        await _mock_plc.set_cycle_active(True)
-        for step in range(2, 6):
-            await asyncio.sleep(0.5)
+        if _mock_plc is not None:
             await _mock_plc.update_process_values(
-                step=step,
+                step=1,
                 recipe_name=req.recipe_name,
                 batch_number=req.batch_number,
             )
-            if step == 3 and req.drop_csv_alarm:
-                await drop_sample_csv_alarm()
-        await _mock_plc.set_cycle_active(False)
+            await _mock_plc.set_cycle_active(True)
+            for step in range(2, 6):
+                await asyncio.sleep(0.5)
+                await _mock_plc.update_process_values(
+                    step=step,
+                    recipe_name=req.recipe_name,
+                    batch_number=req.batch_number,
+                )
+                if step == 3 and req.drop_csv_alarm:
+                    await drop_sample_csv_alarm()
+            await _mock_plc.set_cycle_active(False)
+        else:
+            from asyncua import Client, ua
+
+            async with Client(url=MOCK_PLC_ENDPOINT) as c:
+                n_batch = c.get_node('ns=3;s="Cycle_Data"."Batch_Number"')
+                n_recipe = c.get_node('ns=3;s="Cycle_Data"."Recipe_Name"')
+                n_trig = c.get_node('ns=3;s="Cycle_Control"."Cycle_Active"')
+                n_t1 = c.get_node('ns=3;s="Cycle_Data"."Temp_Zone1"')
+                await n_batch.write_value(
+                    ua.Variant(req.batch_number, ua.VariantType.String)
+                )
+                await n_recipe.write_value(
+                    ua.Variant(req.recipe_name, ua.VariantType.String)
+                )
+                await n_trig.write_value(ua.Variant(True, ua.VariantType.Boolean))
+                for step in range(2, 6):
+                    await asyncio.sleep(0.5)
+                    await n_t1.write_value(
+                        ua.Variant(float(180.0 + 2.5 * step), ua.VariantType.Double)
+                    )
+                    if step == 3 and req.drop_csv_alarm:
+                        await drop_sample_csv_alarm()
+                await n_trig.write_value(ua.Variant(False, ua.VariantType.Boolean))
 
     asyncio.create_task(_run_cycle())
     return {
@@ -436,9 +796,10 @@ async def get_report_schema(
 async def update_report_schema(
     schema_id: int,
     payload: ReportSchemaCreate,
+    reload_poller: bool = Query(default=True),
     db: AsyncSession = Depends(get_db_session),
 ) -> ReportSchema:
-    """Update an existing ReportSchema layout configuration."""
+    """Update an existing ReportSchema layout configuration and reload the poller."""
     schema_obj = await db.get(ReportSchema, schema_id)
     if schema_obj is None:
         raise HTTPException(
@@ -461,6 +822,10 @@ async def update_report_schema(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Could not update ReportSchema: {exc}",
         ) from exc
+
+    if reload_poller and _poller is not None:
+        await restart_runtime_services(start_poller=True)
+
     return schema_obj
 
 

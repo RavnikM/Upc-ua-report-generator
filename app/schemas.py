@@ -144,3 +144,51 @@ class CycleRecordRead(BaseModel):
     status: CycleStatus
     pdf_file_path: Optional[str]
     error_message: Optional[str]
+
+
+class SystemConfigUpdate(BaseModel):
+    """Payload to update PLC connection & runtime settings from the UI."""
+
+    opcua_endpoint_url: str = Field(..., max_length=255)
+    opcua_username: Optional[str] = Field(default=None, max_length=128)
+    opcua_password: Optional[str] = Field(default=None, max_length=255)
+    poll_interval_seconds: float = Field(default=0.5, ge=0.1, le=60.0)
+    csv_watch_dir: str = Field(default="./watched_alarms", max_length=500)
+    use_mock_plc: bool = Field(default=False)
+    active_schema_id: Optional[int] = Field(default=None)
+
+
+class SystemConfigRead(BaseModel):
+    """Serialized SystemConfig entity."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    opcua_endpoint_url: str
+    opcua_username: Optional[str]
+    opcua_password: Optional[str]
+    poll_interval_seconds: float
+    csv_watch_dir: str
+    use_mock_plc: bool
+    active_schema_id: Optional[int]
+    updated_at: datetime
+
+
+class PLCConnectionTestRequest(BaseModel):
+    """Optional override parameters when clicking 'Test PLC Connection' in the UI."""
+
+    opcua_endpoint_url: Optional[str] = None
+    opcua_username: Optional[str] = None
+    opcua_password: Optional[str] = None
+    use_mock_plc: Optional[bool] = None
+
+
+class PLCNodeTestRequest(BaseModel):
+    """Payload to bulk test-read one or more OPC-UA NodeIds on the PLC."""
+
+    node_ids: list[str]
+    opcua_endpoint_url: Optional[str] = None
+    opcua_username: Optional[str] = None
+    opcua_password: Optional[str] = None
+    use_mock_plc: Optional[bool] = None
+

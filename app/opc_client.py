@@ -96,6 +96,8 @@ class S7CyclePoller:
         self._data_nodes: list[Node] = []
 
         # Diagnostics & telemetry counters
+        self.is_connected: bool = False
+        self.last_error: Optional[str] = None
         self.invalid_data_nodes: dict[str, str] = {}
         self.reconnect_count: int = 0
         self._has_connected_once: bool = False
@@ -205,6 +207,8 @@ class S7CyclePoller:
 
             try:
                 async with client:
+                    self.is_connected = True
+                    self.last_error = None
                     if self._has_connected_once:
                         self.reconnect_count += 1
                         logger.info(
@@ -225,6 +229,8 @@ class S7CyclePoller:
                     await self._run_state_machine_loop(client)
 
             except (UaError, OSError, asyncio.TimeoutError) as exc:
+                self.is_connected = False
+                self.last_error = str(exc)
                 if self._stop_event.is_set():
                     break
                 logger.error(
@@ -234,13 +240,17 @@ class S7CyclePoller:
                 )
                 await asyncio.sleep(self.config.reconnect_delay)
             except asyncio.CancelledError:
+                self.is_connected = False
                 logger.info("OPC-UA polling loop cancelled; shutting down cleanly.")
                 break
             except Exception as exc:
+                self.is_connected = False
+                self.last_error = str(exc)
                 if self._stop_event.is_set():
                     break
                 logger.exception("Unexpected error in OPC-UA poller: %s", exc)
                 await asyncio.sleep(self.config.reconnect_delay)
+        self.is_connected = False
 
     async def stop(self) -> None:
         """Signal the polling loop to terminate and wait for background tasks."""
@@ -502,3 +512,146 @@ class S7CyclePoller:
                 cycle_id,
                 exc,
             )
+
+
+# =====================================================================
+# Live PLC Connection Diagnostics, Bulk Node Tester & Node Browser
+# =====================================================================
+
+
+def _build_client(
+    endpoint_url: str,
+    username: Optional[str] = None,
+    password: Optional[str] = None,
+    timeout: float = 4.0,
+) -> Client:
+    """Create a short-lived `asyncua.Client` for diagnostics and node testing."""
+    client = Client(url=endpoint_url, timeout=timeout)
+    if username and password:
+        client.set_user(username)
+        client.set_password(password)
+    return client
+
+
+async def probe_plc_connection(
+    endpoint_url: str,
+    username: Optional[str] = None,
+    password: Optional[str] = None,
+) -> dict[str, Any]:
+    """
+    Test connectivity to a real Siemens S7-1500 OPC-UA server and return
+    round-trip latency and registered namespaces.
+    """
+    t0 = time.monotonic()
+    client = _build_client(endpoint_url, username, password)
+    try:
+        async with client:
+            namespaces = await client.get_namespace_array()
+            latency_ms = round((time.monotonic() - t0) * 1000.0, 1)
+            return {
+                "ok": True,
+                "endpoint_url": endpoint_url,
+                "latency_ms": latency_ms,
+                "namespaces": [
+                    {"index": idx, "uri": uri}
+                    for idx, uri in enumerate(namespaces)
+                ],
+                "error": None,
+            }
+    except Exception as exc:
+        latency_ms = round((time.monotonic() - t0) * 1000.0, 1)
+        return {
+            "ok": False,
+            "endpoint_url": endpoint_url,
+            "latency_ms": latency_ms,
+            "namespaces": [],
+            "error": str(exc),
+        }
+
+
+async def test_read_plc_nodes(
+    endpoint_url: str,
+    node_ids: list[str],
+    username: Optional[str] = None,
+    password: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    """
+    Perform a single bulk read of arbitrary `node_ids` on the target PLC and return
+    each node's live value, OPC-UA VariantType, and StatusCode (`Good` vs `BadNodeIdUnknown`).
+    """
+    if not node_ids:
+        return []
+
+    client = _build_client(endpoint_url, username, password)
+    async with client:
+        nodes = [client.get_node(nid.strip()) for nid in node_ids]
+        data_values = await client.read_attributes(nodes, ua.AttributeIds.Value)
+        results: list[dict[str, Any]] = []
+        for nid, dv in zip(node_ids, data_values):
+            is_good = dv.StatusCode.is_good()
+            val = dv.Value.Value if (dv.Value is not None and is_good) else None
+            vtype = (
+                dv.Value.VariantType.name
+                if (dv.Value is not None and dv.Value.VariantType is not None)
+                else "Null"
+            )
+            results.append(
+                {
+                    "node_id": nid.strip(),
+                    "is_good": is_good,
+                    "status_code": dv.StatusCode.name,
+                    "status_doc": dv.StatusCode.doc,
+                    "value": val,
+                    "variant_type": vtype,
+                }
+            )
+        return results
+
+
+async def browse_plc_node(
+    endpoint_url: str,
+    parent_node_id: Optional[str] = None,
+    username: Optional[str] = None,
+    password: Optional[str] = None,
+    max_children: int = 100,
+) -> dict[str, Any]:
+    """
+    Browse child nodes of `parent_node_id` (defaults to the OPC-UA `Objects` folder)
+    on a live S7-1500 PLC so the user can discover Data Block tags and copy their
+    exact `ns=...;s=...` NodeId strings into the mapping UI.
+    """
+    client = _build_client(endpoint_url, username, password)
+    async with client:
+        parent = (
+            client.get_node(parent_node_id.strip())
+            if parent_node_id and parent_node_id.strip()
+            else client.nodes.objects
+        )
+        parent_id_str = parent.nodeid.to_string()
+        children = await parent.get_children()
+        children = children[:max_children]
+
+        items: list[dict[str, Any]] = []
+        for child in children:
+            try:
+                bname = await child.read_browse_name()
+                nclass = await child.read_node_class()
+                nid_str = child.nodeid.to_string()
+                is_variable = nclass == ua.NodeClass.Variable
+                items.append(
+                    {
+                        "name": bname.Name,
+                        "namespace_index": bname.NamespaceIndex,
+                        "node_id": nid_str,
+                        "node_class": nclass.name,
+                        "is_variable": is_variable,
+                    }
+                )
+            except Exception:
+                continue
+
+        return {
+            "parent_node_id": parent_id_str,
+            "children": items,
+        }
+

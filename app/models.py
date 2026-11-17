@@ -275,3 +275,31 @@ class CycleAlarmLog(Base):
     cycle: Mapped[Optional["CycleRecord"]] = relationship(
         "CycleRecord", back_populates="csv_alarms"
     )
+
+
+class SystemConfig(Base):
+    """
+    Persists runtime PLC connection and application configuration editable from the UI.
+    Single-row configuration table (id=1).
+    """
+
+    __tablename__ = "system_config"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    opcua_endpoint_url: Mapped[str] = mapped_column(
+        String(255), default="opc.tcp://192.168.0.1:4840", nullable=False
+    )
+    opcua_username: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    opcua_password: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    poll_interval_seconds: Mapped[float] = mapped_column(
+        Float, default=0.5, nullable=False
+    )
+    csv_watch_dir: Mapped[str] = mapped_column(
+        String(500), default="./watched_alarms", nullable=False
+    )
+    use_mock_plc: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    active_schema_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
