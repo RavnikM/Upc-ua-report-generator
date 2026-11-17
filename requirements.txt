@@ -8,6 +8,9 @@ python-dotenv>=1.0.1
 # Industrial IoT / OPC-UA
 asyncua>=1.1.0
 
+# File System Monitoring (Alarm CSV Ingestion)
+watchdog>=4.0.0
+
 # Database & Migrations (SQLite + MS SQL Server support)
 SQLAlchemy[asyncio]>=2.0.28
 alembic>=1.13.1

@@ -189,8 +189,8 @@
             <p class="header-subtitle">Machine: <strong>{{ machine_name }}</strong> &bull; Trigger Node: <code>{{ trigger_node }}</code></p>
         </div>
         <div>
-            {% if triggered_alarms %}
-                <span class="status-badge status-alarm">ALARM TRIGGERED ({{ triggered_alarms | length }})</span>
+            {% if total_alarms_count > 0 %}
+                <span class="status-badge status-alarm">ALARMS DETECTED ({{ total_alarms_count }})</span>
             {% else %}
                 <span class="status-badge status-pass">CYCLE OK / NOMINAL</span>
             {% endif %}
@@ -201,8 +201,8 @@
         <tr>
             <td class="meta-label">Cycle ID</td>
             <td class="meta-value">#{{ cycle.id }}</td>
-            <td class="meta-label">Schema Name</td>
-            <td class="meta-value">{{ report_name }}</td>
+            <td class="meta-label">Batch Number</td>
+            <td class="meta-value">{{ batch_number }}</td>
         </tr>
         <tr>
             <td class="meta-label">Start Time (UTC)</td>
@@ -213,43 +213,51 @@
         <tr>
             <td class="meta-label">Cycle Duration</td>
             <td class="meta-value">{{ duration_seconds }} s ({{ total_snapshots }} polls @ 0.5s)</td>
-            <td class="meta-label">Metadata / Recipe</td>
-            <td class="meta-value">{{ string_metadata_summary }}</td>
+            <td class="meta-label">Static Header Data</td>
+            <td class="meta-value">{{ header_metadata_summary }}</td>
         </tr>
     </table>
 
-    <!-- ALARMS SECTION -->
-    <h2 class="section-title">Cycle Alarms &amp; Interlocks</h2>
-    {% if triggered_alarms %}
+    <!-- CSV & OPC-UA ALARMS SECTION -->
+    <h2 class="section-title">Cycle Alarms (CSV Log &amp; Process Interlocks)</h2>
+    {% if csv_alarms or triggered_alarms %}
         <table class="data-table">
             <thead>
                 <tr>
+                    <th>Source</th>
                     <th>Severity</th>
+                    <th>Code / Tag</th>
                     <th>Alarm Description</th>
-                    <th>Tag</th>
-                    <th>Condition</th>
-                    <th>First Trigger (UTC)</th>
-                    <th class="num-col">Active Polls</th>
-                    <th class="num-col">Peak Value</th>
+                    <th>Timestamp (UTC)</th>
+                    <th class="num-col">Details</th>
                 </tr>
             </thead>
             <tbody>
+                {% for csv_alm in csv_alarms %}
+                <tr>
+                    <td><code>CSV ({{ csv_alm.source_file or 'watched' }})</code></td>
+                    <td class="{% if csv_alm.severity == 'CRITICAL' %}pill-fail{% else %}pill-warn{% endif %}">{{ csv_alm.severity }}</td>
+                    <td><code>{{ csv_alm.alarm_code }}</code></td>
+                    <td><strong>{{ csv_alm.alarm_text }}</strong></td>
+                    <td>{{ csv_alm.timestamp_str }}</td>
+                    <td class="num-col">Logged Event</td>
+                </tr>
+                {% endfor %}
                 {% for alm in triggered_alarms %}
                 <tr>
+                    <td><code>OPC-UA</code></td>
                     <td class="{% if alm.severity == 'CRITICAL' %}pill-fail{% else %}pill-warn{% endif %}">{{ alm.severity }}</td>
+                    <td><code>{{ alm.tag_name }} ({{ alm.condition_display }})</code></td>
                     <td><strong>{{ alm.label }}</strong></td>
-                    <td><code>{{ alm.tag_name }}</code></td>
-                    <td><code>{{ alm.condition_display }}</code></td>
                     <td>{{ alm.first_timestamp }}</td>
-                    <td class="num-col">{{ alm.active_samples }} ({{ alm.active_duration_s }}s)</td>
-                    <td class="num-col">{{ alm.peak_value }}</td>
+                    <td class="num-col">Peak: {{ alm.peak_value }} ({{ alm.active_duration_s }}s)</td>
                 </tr>
                 {% endfor %}
             </tbody>
         </table>
     {% else %}
         <div class="no-alarms-box">
-            &#10003; No alarms or interlock violations were triggered during this machine cycle.
+            &#10003; No CSV alarms or OPC-UA interlock violations occurred during this machine cycle.
         </div>
     {% endif %}
 

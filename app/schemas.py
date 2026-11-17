@@ -1,8 +1,5 @@
 """
 Pydantic v2 Schemas for Schema-Driven Report Mapping & API Serialization.
-
-Validates JSON report definitions that map visual report elements
-(Charts, Parameter Tables, Alarms) to Siemens S7-1500 OPC-UA NodeID strings.
 """
 
 from datetime import datetime
@@ -18,28 +15,25 @@ class ChartSeriesSchema(BaseModel):
 
     tag_name: str = Field(..., description="Logical tag key, e.g. 'Temp_Zone1'")
     label: str = Field(..., description="Legend label, e.g. 'Zone 1 Temperature (°C)'")
-    node_id: Optional[str] = Field(
-        default=None,
-        description='Optional inline OPC-UA NodeID, e.g. ns=3;s="Cycle_Data"."Temp_Zone1"',
-    )
+    node_id: Optional[str] = Field(default=None)
     unit: str = Field(default="", description="Engineering unit, e.g. '°C', 'bar', 'RPM'")
-    color: Optional[str] = Field(default=None, description="Hex or Matplotlib color string")
+    color: Optional[str] = Field(default=None)
 
 
 class ChartElementSchema(BaseModel):
     """Defines a time-series chart block in the PDF report."""
 
-    id: str = Field(..., description="Unique chart identifier within the report")
-    title: str = Field(..., description="Chart title rendered on the report")
-    y_axis_label: str = Field(default="Value", description="Y-axis label")
+    id: str = Field(...)
+    title: str = Field(...)
+    y_axis_label: str = Field(default="Value")
     series: list[ChartSeriesSchema] = Field(..., min_length=1)
 
 
 class ParameterRowSchema(BaseModel):
     """Defines a statistical summary row in a Parameter Table."""
 
-    tag_name: str = Field(..., description="Logical tag key")
-    label: str = Field(..., description="Human-readable parameter name")
+    tag_name: str = Field(...)
+    label: str = Field(...)
     node_id: Optional[str] = Field(default=None)
     unit: str = Field(default="")
     aggregations: list[Literal["min", "max", "avg", "first", "last", "std"]] = Field(
@@ -52,32 +46,28 @@ class ParameterRowSchema(BaseModel):
 class ParameterTableElementSchema(BaseModel):
     """Defines a parameter summary table block in the PDF report."""
 
-    id: str = Field(..., description="Unique table identifier")
-    title: str = Field(..., description="Table section header")
+    id: str = Field(...)
+    title: str = Field(...)
     parameters: list[ParameterRowSchema] = Field(..., min_length=1)
 
 
 class AlarmRuleSchema(BaseModel):
-    """
-    Defines an alarm condition evaluated over the 0.5s cycle time-series data
-    (either a boolean PLC alarm tag or a numeric threshold rule).
-    """
+    """Defines an optional threshold/tag alarm evaluated over time-series data."""
 
-    id: str = Field(..., description="Unique alarm rule identifier")
-    tag_name: str = Field(..., description="Monitored tag name")
-    label: str = Field(..., description="Alarm description shown when triggered")
+    id: str = Field(...)
+    tag_name: str = Field(...)
+    label: str = Field(...)
     node_id: Optional[str] = Field(default=None)
     condition: Literal["is_true", "gt", "lt", "gte", "lte"] = Field(default="is_true")
-    threshold: Optional[float] = Field(
-        default=None,
-        description="Numeric threshold for gt/lt/gte/lte conditions",
-    )
+    threshold: Optional[float] = Field(default=None)
     severity: Literal["INFO", "WARNING", "CRITICAL"] = Field(default="CRITICAL")
 
 
 class ReportLayoutConfig(BaseModel):
     """
     Root JSON configuration stored in `ReportSchema.schema_config`.
+    Separates `header_tags` (read ONCE on cycle start, such as Batch_Number)
+    from `tags` (polled every 0.5s during an active cycle).
     """
 
     header_title: str = Field(default="Automated Machine Cycle Report")
@@ -85,10 +75,16 @@ class ReportLayoutConfig(BaseModel):
     auto_print: bool = Field(default=False)
     printer_name: Optional[str] = Field(default=None)
 
-    # Central lookup of {tag_name: opc_ua_node_id}
+    # Static cycle tags read ONCE at cycle start (e.g. Batch_Number, Recipe_Name)
+    header_tags: dict[str, str] = Field(
+        default_factory=dict,
+        description="Static tags read once when Cycle_Active becomes True",
+    )
+
+    # Dynamic process tags polled every 0.5s during an active cycle
     tags: dict[str, str] = Field(
         default_factory=dict,
-        description='Mapping of logical tag names to OPC-UA NodeId strings',
+        description="Dynamic process tags polled every 0.5s while Cycle_Active is True",
     )
     charts: list[ChartElementSchema] = Field(default_factory=list)
     parameter_tables: list[ParameterTableElementSchema] = Field(default_factory=list)
@@ -120,6 +116,20 @@ class ReportSchemaRead(BaseModel):
     updated_at: datetime
 
 
+class CycleAlarmLogRead(BaseModel):
+    """Serialized CycleAlarmLog database entity."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    cycle_id: Optional[int]
+    timestamp: datetime
+    alarm_code: str
+    alarm_text: str
+    severity: str
+    source_file: Optional[str]
+
+
 class CycleRecordRead(BaseModel):
     """Serialized CycleRecord database entity."""
 
@@ -127,6 +137,8 @@ class CycleRecordRead(BaseModel):
 
     id: int
     report_schema_id: int
+    batch_number: Optional[str]
+    header_data: Optional[dict[str, Any]]
     start_time: datetime
     end_time: Optional[datetime]
     status: CycleStatus

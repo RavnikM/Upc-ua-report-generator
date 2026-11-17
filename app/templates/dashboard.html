@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>S7-1500 OPC-UA Cycle Report Prototype</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #f1f5f9;
+            color: #0f172a;
+            margin: 0;
+            padding: 20px;
+        }
+        .container { max-width: 1180px; margin: 0 auto; }
+        header {
+            background: #0f172a;
+            color: #fff;
+            padding: 16px 22px;
+            border-radius: 8px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 18px;
+        }
+        header h1 { margin: 0; font-size: 1.25rem; }
+        header p { margin: 4px 0 0 0; font-size: 0.85rem; color: #94a3b8; }
+        .badge {
+            padding: 5px 12px;
+            border-radius: 999px;
+            font-weight: 700;
+            font-size: 0.8rem;
+        }
+        .badge-idle { background: #334155; color: #e2e8f0; }
+        .badge-active { background: #22c55e; color: #052e16; }
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+            margin-bottom: 18px;
+        }
+        .card {
+            background: #fff;
+            border: 1px solid #cbd5e1;
+            border-radius: 8px;
+            padding: 16px;
+        }
+        .card h2 {
+            margin: 0 0 12px 0;
+            font-size: 1rem;
+            border-bottom: 1px solid #e2e8f0;
+            padding-bottom: 8px;
+        }
+        .controls { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+        input[type="text"] {
+            padding: 7px 10px;
+            border: 1px solid #cbd5e1;
+            border-radius: 5px;
+            font-size: 0.88rem;
+        }
+        button {
+            background: #2563eb;
+            color: #fff;
+            border: none;
+            padding: 8px 14px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 0.85rem;
+        }
+        button:hover { background: #1d4ed8; }
+        button.secondary { background: #475569; }
+        button.secondary:hover { background: #334155; }
+        button.warn { background: #dc2626; }
+        button.warn:hover { background: #b91c1c; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.86rem;
+        }
+        th, td {
+            text-align: left;
+            padding: 8px 10px;
+            border-bottom: 1px solid #e2e8f0;
+        }
+        th { background: #f8fafc; font-weight: 600; color: #475569; }
+        code {
+            background: #f1f5f9;
+            padding: 2px 5px;
+            border-radius: 4px;
+            font-size: 0.8rem;
+        }
+        textarea {
+            width: 100%;
+            height: 210px;
+            font-family: monospace;
+            font-size: 0.8rem;
+            padding: 8px;
+            border: 1px solid #cbd5e1;
+            border-radius: 5px;
+        }
+        .status-msg {
+            margin-top: 8px;
+            font-size: 0.83rem;
+            color: #0369a1;
+            min-height: 1.2em;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <header>
+        <div>
+            <h1>Siemens S7-1500 OPC-UA Cycle Reporting Prototype</h1>
+            <p>One-shot Header Tags (Batch_Number) &bull; 0.5s Bulk Time-Series Polling &bull; Watchdog CSV Alarm Ingestion (.bckup)</p>
+        </div>
+        <div>
+            <span id="poller-badge" class="badge badge-idle">POLLER: IDLE</span>
+        </div>
+    </header>
+
+    <div class="grid">
+        <div class="card">
+            <h2>1. PLC Cycle &amp; Watchdog CSV Simulator</h2>
+            <div class="controls" style="margin-bottom: 10px;">
+                <label style="font-size:0.85rem; font-weight:600;">Batch Number:</label>
+                <input type="text" id="batch-input" value="BATCH-2026-101" style="width: 160px;">
+                <button onclick="simulateCycle(false)">Run Clean Cycle (2.5s)</button>
+                <button class="warn" onclick="simulateCycle(true)">Run Cycle + CSV Alarm</button>
+            </div>
+            <div class="controls">
+                <button class="secondary" onclick="dropSampleCsv()">Drop Standalone Alarm CSV into Watch Folder</button>
+            </div>
+            <div id="sim-status" class="status-msg"></div>
+            <div style="font-size: 0.82rem; color: #475569; margin-top: 8px;">
+                <div><strong>Watched Folder:</strong> <code id="watch-dir">./watched_alarms</code> &rarr; moves read CSVs to <code>.bckup/</code></div>
+                <div style="margin-top:4px;"><strong>Backed-up CSV files (<code>.bckup</code>):</strong> <span id="bckup-list">none</span></div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>2. Active Report Schema (One-Shot Header vs. 0.5s Tags)</h2>
+            <textarea id="schema-editor"></textarea>
+            <div class="controls" style="margin-top: 8px; justify-content: space-between;">
+                <span id="schema-status" style="font-size: 0.8rem; color: #15803d;"></span>
+                <button class="secondary" onclick="saveSchema()">Save Schema Config</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="card" style="margin-bottom: 18px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+            <h2 style="margin:0; border:none; padding:0;">3. Completed Machine Cycles &amp; PDF Reports</h2>
+            <button class="secondary" onclick="refreshDashboard()">Refresh</button>
+        </div>
+        <table>
+            <thead>
+                <tr>
+                    <th>Cycle ID</th>
+                    <th>Batch Number (One-Shot)</th>
+                    <th>Header Metadata</th>
+                    <th>Start Time (UTC)</th>
+                    <th>End Time (UTC)</th>
+                    <th>Status</th>
+                    <th>PDF Report</th>
+                </tr>
+            </thead>
+            <tbody id="cycles-tbody">
+                <tr><td colspan="7">Loading...</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <div class="card">
+        <h2>4. Ingested CSV Alarms in Database (<code>cycle_alarm_logs</code>)</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Cycle ID</th>
+                    <th>Timestamp (UTC)</th>
+                    <th>Alarm Code</th>
+                    <th>Severity</th>
+                    <th>Alarm Text</th>
+                    <th>Source CSV File</th>
+                </tr>
+            </thead>
+            <tbody id="alarms-tbody">
+                <tr><td colspan="7">Loading...</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<script>
+let currentSchemaId = null;
+
+async function refreshDashboard() {
+    const statusRes = await fetch('/api/prototype/status');
+    const statusData = await statusRes.json();
+
+    const badge = document.getElementById('poller-badge');
+    badge.textContent = `POLLER: ${statusData.poller_state}`;
+    badge.className = 'badge ' + (statusData.poller_state === 'ACTIVE' ? 'badge-active' : 'badge-idle');
+    document.getElementById('watch-dir').textContent = statusData.watch_dir;
+    document.getElementById('bckup-list').textContent = statusData.backup_files.length
+        ? statusData.backup_files.join(', ')
+        : 'none';
+
+    const cyclesRes = await fetch('/api/cycles?limit=15');
+    const cycles = await cyclesRes.json();
+    const tbody = document.getElementById('cycles-tbody');
+    if (!cycles.length) {
+        tbody.innerHTML = '<tr><td colspan="7" style="color:#64748b;">No cycles recorded yet. Click "Run Clean Cycle" above!</td></tr>';
+    } else {
+        tbody.innerHTML = cycles.map(c => {
+            const hdr = c.header_data ? JSON.stringify(c.header_data) : '—';
+            const pdfBtn = c.pdf_file_path
+                ? `<a href="/api/cycles/${c.id}/pdf" target="_blank"><button style="padding:4px 10px; font-size:0.78rem;">Open PDF</button></a>`
+                : `<button class="secondary" style="padding:4px 10px; font-size:0.78rem;" onclick="regenPdf(${c.id})">Generate PDF</button>`;
+            return `<tr>
+                <td><strong>#${c.id}</strong></td>
+                <td><code>${c.batch_number || 'N/A'}</code></td>
+                <td><code>${hdr}</code></td>
+                <td>${c.start_time ? c.start_time.slice(11, 23) : '—'}</td>
+                <td>${c.end_time ? c.end_time.slice(11, 23) : 'RUNNING'}</td>
+                <td><strong>${c.status}</strong></td>
+                <td>${pdfBtn}</td>
+            </tr>`;
+        }).join('');
+    }
+
+    const alarmsRes = await fetch('/api/alarms?limit=15');
+    const alarms = await alarmsRes.json();
+    const alarmsTbody = document.getElementById('alarms-tbody');
+    if (!alarms.length) {
+        alarmsTbody.innerHTML = '<tr><td colspan="7" style="color:#64748b;">No CSV alarms ingested yet.</td></tr>';
+    } else {
+        alarmsTbody.innerHTML = alarms.map(a => `<tr>
+            <td>${a.id}</td>
+            <td>${a.cycle_id ? '#' + a.cycle_id : 'Unassigned'}</td>
+            <td>${a.timestamp.slice(11, 23)}</td>
+            <td><code>${a.alarm_code}</code></td>
+            <td><strong>${a.severity}</strong></td>
+            <td>${a.alarm_text}</td>
+            <td><code>${a.source_file || ''}</code></td>
+        </tr>`).join('');
+    }
+}
+
+async function loadSchema() {
+    const res = await fetch('/api/schemas');
+    const schemas = await res.json();
+    if (schemas.length) {
+        currentSchemaId = schemas[0].id;
+        document.getElementById('schema-editor').value = JSON.stringify(schemas[0].schema_config, null, 2);
+    }
+}
+
+async function saveSchema() {
+    if (!currentSchemaId) return;
+    const statusEl = document.getElementById('schema-status');
+    try {
+        const parsed = JSON.parse(document.getElementById('schema-editor').value);
+        const schemaRes = await fetch(`/api/schemas/${currentSchemaId}`);
+        const current = await schemaRes.json();
+        const putRes = await fetch(`/api/schemas/${currentSchemaId}`, {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                report_name: current.report_name,
+                description: current.description,
+                trigger_node: current.trigger_node,
+                is_active: true,
+                schema_config: parsed
+            })
+        });
+        if (putRes.ok) {
+            statusEl.textContent = 'Saved!';
+            setTimeout(() => statusEl.textContent = '', 2000);
+        } else {
+            statusEl.textContent = 'Validation error';
+        }
+    } catch (e) {
+        statusEl.textContent = 'Invalid JSON';
+    }
+}
+
+async function simulateCycle(withCsvAlarm) {
+    const batch = document.getElementById('batch-input').value || 'BATCH-001';
+    const msgEl = document.getElementById('sim-status');
+    msgEl.textContent = `Starting simulated PLC cycle (Batch=${batch}, CSV Alarm=${withCsvAlarm})...`;
+    await fetch('/api/prototype/simulate-cycle', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({batch_number: batch, drop_csv_alarm: withCsvAlarm})
+    });
+    // Increment batch number for convenience
+    const match = batch.match(/^(.*?)(\d+)$/);
+    if (match) {
+        document.getElementById('batch-input').value = match[1] + String(parseInt(match[2], 10) + 1).padStart(match[2].length, '0');
+    }
+    setTimeout(refreshDashboard, 600);
+    setTimeout(() => { msgEl.textContent = 'Cycle finished & PDF report generated!'; refreshDashboard(); }, 3800);
+}
+
+async function dropSampleCsv() {
+    const msgEl = document.getElementById('sim-status');
+    const res = await fetch('/api/prototype/drop-csv', {method: 'POST'});
+    const data = await res.json();
+    msgEl.textContent = `Dropped '${data.filename}' -> Watchdog ingested & moved to .bckup!`;
+    setTimeout(refreshDashboard, 400);
+}
+
+async function regenPdf(cycleId) {
+    await fetch(`/api/cycles/${cycleId}/generate-report`, {method: 'POST'});
+    await refreshDashboard();
+}
+
+loadSchema();
+refreshDashboard();
+setInterval(refreshDashboard, 2000);
+</script>
+</body>
+</html>

@@ -1,21 +1,23 @@
 """
 Asynchronous OPC-UA Client & 0.5s State-Machine Polling Engine for Siemens S7-1500.
 
-Implements a deterministic 3-state machine:
+Implements a deterministic 3-state machine with non-redundant static tag reading:
 - State 1 (IDLE): Polls the boolean `Cycle_Active` trigger node every 0.5s.
-- State 2 (ACTIVE): Executes single-request bulk reads (`client.read_values()` /
-  `client.read_nodes()`) for all configured data tags every 0.5s and logs them.
+- Transition IDLE -> ACTIVE (Rising Edge): Executes a ONE-SHOT bulk read of static
+  `header_nodes_map` (e.g., `Batch_Number`, `Recipe_Name`) and saves them directly on
+  `CycleRecord` so static cycle metadata is never redundantly polled every 0.5s.
+- State 2 (ACTIVE): Executes single-request bulk reads (`client.read_nodes()`)
+  for dynamic process `data_nodes_map` every 0.5s and logs them to `CycleTimeSeries`.
 - State 3 (COMPLETION): Triggered on the falling edge (TRUE -> FALSE) of
-  `Cycle_Active`, finalizing the cycle record and dispatching PDF report generation
-  asynchronously before returning immediately to IDLE.
+  `Cycle_Active`, finalizing the cycle record and dispatching PDF report generation.
 """
 
 import asyncio
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 import enum
 import logging
 import time
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from typing import Any, Optional
 
 from asyncua import Client, Node, ua
@@ -42,9 +44,10 @@ class CyclePollerConfig:
 
     report_schema_id: int
     trigger_node_id: str
-    # Mapping of logical tag_name -> OPC-UA NodeId string
-    # e.g., {"Temp_Zone1": 'ns=3;s="Cycle_Data"."Temp_Zone1"'}
+    # Dynamic process tags polled every 0.5s while Cycle_Active == True
     data_nodes_map: dict[str, str]
+    # Static cycle metadata tags (e.g. Batch_Number, Recipe_Name) read ONCE on cycle start
+    header_nodes_map: dict[str, str] = field(default_factory=dict)
     poll_interval: float = 0.5
     reconnect_delay: float = 5.0
     persist_to_db: bool = True
@@ -65,9 +68,8 @@ class S7CyclePoller:
     """
     High-efficiency OPC-UA polling client for a Siemens S7-1500 PLC.
 
-    Uses monotonic drift-compensated timing to maintain a strict 0.5-second
-    polling cadence and performs single-request bulk reads (`client.read_values` /
-    `client.read_nodes`) so network round-trip latency never accumulates across tags.
+    Separates one-shot cycle header reads (`header_nodes_map`, read once at cycle start)
+    from continuous 0.5s time-series bulk reads (`data_nodes_map`).
     """
 
     def __init__(
@@ -88,6 +90,8 @@ class S7CyclePoller:
 
         # Cached asyncua Node references initialized upon connection
         self._trigger_node: Optional[Node] = None
+        self._header_tag_names: list[str] = []
+        self._header_nodes: list[Node] = []
         self._tag_names: list[str] = []
         self._data_nodes: list[Node] = []
 
@@ -98,29 +102,42 @@ class S7CyclePoller:
 
         # Active cycle tracking
         self._active_cycle_id: Optional[int] = None
+        self.active_header_data: dict[str, Any] = {}
         self._in_memory_cycle_counter: int = 0
         self.recorded_batches: list[PolledSampleBatch] = []
         self.completed_cycle_ids: list[int] = []
 
+    @property
+    def active_cycle_id(self) -> Optional[int]:
+        """Return currently running cycle ID if ACTIVE, else None."""
+        return self._active_cycle_id
+
     def _prepare_node_references(self, client: Client) -> None:
         """
-        Pre-resolve `asyncua.Node` objects for the trigger tag and all configured
-        process data tags so no node-resolution overhead occurs inside the 0.5s loop.
-        Also ensures `client.read_nodes` is available as an alias to `client.read_values`
-        in `asyncua >= 1.x / 2.x`.
+        Pre-resolve `asyncua.Node` objects for the trigger tag, one-shot header tags,
+        and 0.5s process data tags.
         """
         if not hasattr(client, "read_nodes"):
             setattr(client, "read_nodes", client.read_values)
 
         self._trigger_node = client.get_node(self.config.trigger_node_id)
+
+        self._header_tag_names = list(self.config.header_nodes_map.keys())
+        self._header_nodes = [
+            client.get_node(node_id_str)
+            for node_id_str in self.config.header_nodes_map.values()
+        ]
+
         self._tag_names = list(self.config.data_nodes_map.keys())
         self._data_nodes = [
             client.get_node(node_id_str)
             for node_id_str in self.config.data_nodes_map.values()
         ]
         logger.info(
-            "Prepared OPC-UA node handles: trigger='%s', bulk data tags=%d (%s)",
+            "Prepared OPC-UA handles: trigger='%s', one-shot header tags=%d (%s), 0.5s bulk tags=%d (%s)",
             self.config.trigger_node_id,
+            len(self._header_nodes),
+            ", ".join(self._header_tag_names) or "none",
             len(self._data_nodes),
             ", ".join(self._tag_names),
         )
@@ -128,14 +145,14 @@ class S7CyclePoller:
     async def _validate_nodes(self, client: Client) -> None:
         """
         Perform a single bulk attribute read upon connection to verify that the
-        trigger NodeId and all configured data NodeIds exist in the S7-1500 address space.
-
-        - If the trigger node is invalid (e.g., `BadNodeIdUnknown`), raises `UaError`.
-        - If any data node is invalid, logs a warning and records it in
-          `self.invalid_data_nodes` without halting valid tags.
+        trigger NodeId, header NodeIds, and data NodeIds exist in the S7-1500 address space.
         """
         assert self._trigger_node is not None
-        all_nodes: list[Node] = [self._trigger_node, *self._data_nodes]
+        all_nodes: list[Node] = [
+            self._trigger_node,
+            *self._header_nodes,
+            *self._data_nodes,
+        ]
         data_values = await client.read_attributes(all_nodes, ua.AttributeIds.Value)
 
         trigger_dv = data_values[0]
@@ -148,22 +165,35 @@ class S7CyclePoller:
             raise UaError(msg)
 
         self.invalid_data_nodes.clear()
-        for tag_name, dv in zip(self._tag_names, data_values[1:]):
+        combined_names = [*self._header_tag_names, *self._tag_names]
+        combined_map = {**self.config.header_nodes_map, **self.config.data_nodes_map}
+        for tag_name, dv in zip(combined_names, data_values[1:]):
             if not dv.StatusCode.is_good():
-                node_id_str = self.config.data_nodes_map[tag_name]
+                node_id_str = combined_map[tag_name]
                 self.invalid_data_nodes[tag_name] = dv.StatusCode.name
                 logger.warning(
-                    "Configured data tag '%s' (%s) returned non-good StatusCode: %s (%s)",
+                    "Configured tag '%s' (%s) returned non-good StatusCode: %s (%s)",
                     tag_name,
                     node_id_str,
                     dv.StatusCode.name,
                     dv.StatusCode.doc,
                 )
 
+    async def _read_header_nodes_once(self, client: Client) -> dict[str, Any]:
+        """
+        Perform a single bulk read of static cycle metadata tags (`header_nodes_map`)
+        when a cycle starts (e.g., `Batch_Number`, `Recipe_Name`).
+        """
+        if not self._header_nodes:
+            return {}
+        bulk_read_fn = getattr(client, "read_nodes", client.read_values)
+        values: list[Any] = await bulk_read_fn(self._header_nodes)
+        header_dict = dict(zip(self._header_tag_names, values))
+        logger.info("[ONE-SHOT HEADER READ] %s", header_dict)
+        return header_dict
+
     async def start(self) -> None:
-        """
-        Main supervision loop with automatic reconnection to the S7-1500 PLC.
-        """
+        """Main supervision loop with automatic reconnection to the S7-1500 PLC."""
         self._stop_event.clear()
         logger.info("Starting S7CyclePoller targeting %s", self.endpoint_url)
 
@@ -220,54 +250,44 @@ class S7CyclePoller:
             await asyncio.gather(*self._background_tasks, return_exceptions=True)
 
     async def _run_state_machine_loop(self, client: Client) -> None:
-        """
-        Execute the 0.5-second drift-compensated state machine loop.
-        """
+        """Execute the 0.5-second drift-compensated state machine loop."""
         assert self._trigger_node is not None, "Trigger node must be initialized."
 
         while not self._stop_event.is_set():
             loop_start_monotonic = time.monotonic()
 
             if self.state == PollerState.IDLE:
-                # ---------------------------------------------------------
                 # STATE 1 (IDLE): Poll boolean `Cycle_Active` tag
-                # ---------------------------------------------------------
                 cycle_active = bool(await self._trigger_node.read_value())
 
                 if cycle_active:
-                    self._active_cycle_id = await self._on_cycle_start()
+                    # Read static header tags (Batch_Number, Recipe_Name, etc.) ONCE!
+                    header_data = await self._read_header_nodes_once(client)
+                    self.active_header_data = header_data
+                    self._active_cycle_id = await self._on_cycle_start(header_data)
                     self.state = PollerState.ACTIVE
                     logger.info(
                         "[STATE: IDLE -> ACTIVE] Rising edge on Cycle_Active! "
-                        "Started cycle_id=%d. Executing t=0 bulk read.",
+                        "Started cycle_id=%d (header=%s). Executing t=0 bulk read.",
                         self._active_cycle_id,
+                        header_data,
                     )
-                    # Immediately capture the t=0 sample upon rising edge
                     await self._poll_active_cycle_step(client)
 
-                    # Handle edge case where trigger immediately drops within same tick
                     if self.state == PollerState.COMPLETION:
                         await self._handle_completion_transition()
 
             elif self.state == PollerState.ACTIVE:
-                # ---------------------------------------------------------
-                # STATE 2 (ACTIVE): Bulk-read trigger + all data tags
-                # in a SINGLE OPC-UA Read service request.
-                # ---------------------------------------------------------
+                # STATE 2 (ACTIVE): Bulk-read trigger + dynamic data tags
                 await self._poll_active_cycle_step(client)
 
-                # If falling edge occurred during _poll_active_cycle_step,
-                # immediately process State 3 (COMPLETION) in the same tick
                 if self.state == PollerState.COMPLETION:
                     await self._handle_completion_transition()
 
             elif self.state == PollerState.COMPLETION:
-                # ---------------------------------------------------------
                 # STATE 3 (COMPLETION): Finalize cycle & dispatch PDF job
-                # ---------------------------------------------------------
                 await self._handle_completion_transition()
 
-            # Drift-compensated sleep to keep cycle cadence at 0.5s
             elapsed = time.monotonic() - loop_start_monotonic
             sleep_duration = max(0.0, self.config.poll_interval - elapsed)
             if elapsed > self.config.poll_interval:
@@ -282,6 +302,7 @@ class S7CyclePoller:
         """Process State 3 (COMPLETION) and return immediately to State 1 (IDLE)."""
         completed_cycle_id = self._active_cycle_id
         self._active_cycle_id = None
+        self.active_header_data = {}
         self.state = PollerState.IDLE
 
         if completed_cycle_id is not None:
@@ -292,17 +313,14 @@ class S7CyclePoller:
     async def _poll_active_cycle_step(self, client: Client) -> None:
         """
         Perform a single-request bulk read of `[trigger_node, *data_nodes]`.
-        Calls `client.read_nodes(all_nodes)` (backed by `client.read_values`),
-        which sends one OPC-UA ReadRequest packet for all nodes simultaneously.
+        Static header tags (like `Batch_Number`) are excluded from this 0.5s loop.
         """
         assert self._trigger_node is not None
         assert self._active_cycle_id is not None
 
-        # Combine trigger node and all process data nodes into a single bulk read
         all_nodes: list[Node] = [self._trigger_node, *self._data_nodes]
         sample_timestamp = datetime.now(timezone.utc)
 
-        # Single network round-trip to S7-1500
         bulk_read_fn = getattr(client, "read_nodes", client.read_values)
         values: list[Any] = await bulk_read_fn(all_nodes)
 
@@ -310,7 +328,6 @@ class S7CyclePoller:
         tag_values = values[1:]
 
         if not cycle_active:
-            # Falling edge detected (TRUE -> FALSE) -> move to COMPLETION
             logger.info(
                 "[STATE: ACTIVE -> COMPLETION] Falling edge detected on Cycle_Active "
                 "for cycle_id=%d.",
@@ -319,7 +336,6 @@ class S7CyclePoller:
             self.state = PollerState.COMPLETION
             return
 
-        # Package tag readings and log
         readings: dict[str, Any] = dict(zip(self._tag_names, tag_values))
         await self.log_timeseries_batch(
             cycle_id=self._active_cycle_id,
@@ -331,18 +347,30 @@ class S7CyclePoller:
     # Database & PDF Trigger Functions
     # =====================================================================
 
-    async def _on_cycle_start(self) -> int:
+    async def _on_cycle_start(
+        self, header_data: Optional[dict[str, Any]] = None
+    ) -> int:
         """
-        Create a new `CycleRecord` row in the database when `Cycle_Active` goes TRUE
-        (or allocate an in-memory cycle ID if `persist_to_db=False`).
+        Create a new `CycleRecord` row in the database when `Cycle_Active` goes TRUE,
+        persisting the one-shot `batch_number` and `header_data` dictionary.
         """
         if not self.config.persist_to_db:
             self._in_memory_cycle_counter += 1
             return self._in_memory_cycle_counter
 
+        clean_header = header_data or {}
+        # Extract batch_number if present under common key names
+        batch_val: Optional[str] = None
+        for key in ("Batch_Number", "batch_number", "BatchNumber", "Batch"):
+            if key in clean_header and clean_header[key] is not None:
+                batch_val = str(clean_header[key])
+                break
+
         async with get_Session_context() as session:
             new_cycle = CycleRecord(
                 report_schema_id=self.config.report_schema_id,
+                batch_number=batch_val,
+                header_data=clean_header if clean_header else None,
                 start_time=datetime.now(timezone.utc),
                 status=CycleStatus.RUNNING,
             )
@@ -356,11 +384,7 @@ class S7CyclePoller:
         timestamp: datetime,
         readings: dict[str, Any],
     ) -> None:
-        """
-        Bulk-insert a 0.5-second snapshot of all polled tags into `CycleTimeSeries`.
-
-        Also appends to `self.recorded_batches` for verification and diagnostics.
-        """
+        """Bulk-insert a 0.5-second snapshot of dynamic tags into `CycleTimeSeries`."""
         if not readings:
             return
 
@@ -409,19 +433,30 @@ class S7CyclePoller:
 
     async def _on_cycle_complete(self, cycle_id: int) -> None:
         """
-        Mark the `CycleRecord` as COMPLETED with its `end_time` and spawn an
-        asynchronous background task to generate and print the PDF report so
-        the OPC-UA polling loop is never blocked.
+        Mark the `CycleRecord` as COMPLETED, link any unattached CSV alarms that
+        arrived during this cycle, and spawn the async PDF report task.
         """
         end_timestamp = datetime.now(timezone.utc)
         if self.config.persist_to_db:
+            from sqlalchemy import update
+            from app.models import CycleAlarmLog
+
             async with get_Session_context() as session:
                 cycle = await session.get(CycleRecord, cycle_id)
                 if cycle is not None:
                     cycle.end_time = end_timestamp
                     cycle.status = CycleStatus.COMPLETED
+                    # Link any CSV alarms that arrived during this cycle's window
+                    await session.execute(
+                        update(CycleAlarmLog)
+                        .where(
+                            CycleAlarmLog.cycle_id.is_(None),
+                            CycleAlarmLog.timestamp >= cycle.start_time,
+                            CycleAlarmLog.timestamp <= end_timestamp,
+                        )
+                        .values(cycle_id=cycle_id)
+                    )
 
-        # Fire-and-forget background task with strong reference tracking
         task = asyncio.create_task(
             self.trigger_pdf_generation(cycle_id),
             name=f"pdf-report-cycle-{cycle_id}",

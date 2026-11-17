@@ -1,9 +1,11 @@
 """
 Schema-Driven PDF Report Generation Engine.
 
-Combines Pandas time-series analysis, Matplotlib chart generation (rendered to
-temporary PNG images), Jinja2 HTML templating, WeasyPrint PDF compilation, and
-optional `win32print` OS printing.
+Combines:
+- Static one-shot cycle header metadata (`batch_number`, `header_data`) from `CycleRecord`
+- Consumed CSV alarms (`CycleAlarmLog`) from the database
+- 0.5s dynamic time-series data (`CycleTimeSeries`) analyzed via Pandas & Matplotlib
+- Jinja2 HTML templating + WeasyPrint PDF compilation + optional `win32print` dispatch.
 """
 
 import asyncio
@@ -18,14 +20,19 @@ import matplotlib
 
 # Force headless non-GUI backend before importing pyplot
 matplotlib.use("Agg")
-import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import pandas as pd
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from weasyprint import HTML
 
 from app.database import get_Session_context
-from app.models import CycleRecord, CycleStatus, CycleTimeSeries, ReportSchema
+from app.models import (
+    CycleAlarmLog,
+    CycleRecord,
+    CycleStatus,
+    CycleTimeSeries,
+    ReportSchema,
+)
 from app.printer import PrintJobResult, print_pdf_document
 from app.schemas import (
     AlarmRuleSchema,
@@ -61,10 +68,7 @@ def _evaluate_parameter_tables(
     df_numeric: pd.DataFrame,
     tables_cfg: list[ParameterTableElementSchema],
 ) -> list[dict[str, Any]]:
-    """
-    Compute statistical aggregations (Min, Max, Avg) and setpoint tolerance checks
-    for each parameter table defined in `ReportLayoutConfig`.
-    """
+    """Compute Min, Max, Avg and Setpoint Tolerance checks for Parameter Tables."""
     rendered_tables: list[dict[str, Any]] = []
 
     for tbl in tables_cfg:
@@ -121,9 +125,7 @@ def _evaluate_alarms(
     alarms_cfg: list[AlarmRuleSchema],
     poll_interval_s: float = 0.5,
 ) -> list[dict[str, Any]]:
-    """
-    Evaluate configured alarm rules against the 0.5s time-series DataFrame.
-    """
+    """Evaluate configured OPC-UA alarm rules against the 0.5s time-series DataFrame."""
     triggered: list[dict[str, Any]] = []
     if df_numeric.empty:
         return triggered
@@ -192,11 +194,8 @@ def _render_charts_and_compile_pdf_sync(
     output_pdf_path: Path,
 ) -> Path:
     """
-    Synchronous worker (run inside `asyncio.to_thread`) that:
-    1. Generates Matplotlib time-series charts into a temporary directory.
-    2. Renders the Jinja2 HTML template with `file://` URIs to those temp chart PNGs.
-    3. Invokes WeasyPrint to write the final PDF file.
-    4. Automatically cleans up the temporary chart images.
+    Synchronous worker (run inside `asyncio.to_thread`) that generates Matplotlib
+    charts to temp PNGs, renders Jinja2 HTML, and compiles the PDF via WeasyPrint.
     """
     output_pdf_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -204,12 +203,9 @@ def _render_charts_and_compile_pdf_sync(
         tmp_dir_path = Path(tmp_dir)
         chart_images: list[dict[str, str]] = []
 
-        # Calculate relative elapsed seconds from start of cycle for clean X-axis
         if not df_numeric.empty:
             t0 = df_numeric.index[0]
-            elapsed_seconds = [
-                (ts - t0).total_seconds() for ts in df_numeric.index
-            ]
+            elapsed_seconds = [(ts - t0).total_seconds() for ts in df_numeric.index]
         else:
             elapsed_seconds = []
 
@@ -270,7 +266,6 @@ def _render_charts_and_compile_pdf_sync(
                 }
             )
 
-        # Render HTML via Jinja2 and compile PDF via WeasyPrint
         full_context = {**template_context, "chart_images": chart_images}
         template = jinja_env.get_template("cycle_report.html")
         rendered_html = template.render(**full_context)
@@ -288,16 +283,10 @@ async def generate_cycle_pdf_report(
     force_print: Optional[bool] = None,
 ) -> GeneratedReportResult:
     """
-    Full asynchronous pipeline to generate (and optionally print) a PDF report
-    for a completed `CycleRecord`.
-
-    1. Loads `CycleRecord`, `ReportSchema`, and `CycleTimeSeries` rows from the DB.
-    2. Pivots time-series data into a Pandas DataFrame.
-    3. Evaluates Parameter Tables and Alarm Rules.
-    4. Offloads Matplotlib chart rendering & WeasyPrint PDF compilation to a
-       background thread (`asyncio.to_thread`).
-    5. Optionally prints the PDF via `win32print` if `auto_print` or `force_print` is set.
-    6. Updates `CycleRecord.pdf_file_path` and `CycleRecord.status`.
+    Generate (and optionally print) a PDF report for `cycle_id`, combining:
+    - One-shot `batch_number` and `header_data` from `CycleRecord`
+    - CSV-ingested alarms from `CycleAlarmLog`
+    - 0.5s time-series data from `CycleTimeSeries`
     """
     async with get_Session_context() as session:
         cycle = await session.get(CycleRecord, cycle_id)
@@ -317,15 +306,38 @@ async def generate_cycle_pdf_report(
         )
         ts_rows = list(ts_result.scalars().all())
 
-        # Snapshot attributes for processing outside session
-        report_name = schema_row.report_name
-        trigger_node = schema_row.trigger_node
-        layout_cfg = ReportLayoutConfig.model_validate(schema_row.schema_config)
         start_time = cycle.start_time
         end_time = cycle.end_time or cycle.start_time
 
+        # Query CSV alarms attached to this cycle_id OR falling within its [start_time, end_time] window
+        csv_alarms_result = await session.execute(
+            select(CycleAlarmLog)
+            .where(
+                or_(
+                    CycleAlarmLog.cycle_id == cycle_id,
+                    (
+                        CycleAlarmLog.cycle_id.is_(None)
+                        & (CycleAlarmLog.timestamp >= start_time)
+                        & (CycleAlarmLog.timestamp <= end_time)
+                    ),
+                )
+            )
+            .order_by(CycleAlarmLog.timestamp, CycleAlarmLog.id)
+        )
+        csv_alarm_rows = list(csv_alarms_result.scalars().all())
+
+        # Ensure any matched unattached CSV alarms get linked to this cycle_id
+        for alm_row in csv_alarm_rows:
+            if alm_row.cycle_id is None:
+                alm_row.cycle_id = cycle_id
+
+        report_name = schema_row.report_name
+        trigger_node = schema_row.trigger_node
+        layout_cfg = ReportLayoutConfig.model_validate(schema_row.schema_config)
+        batch_number = cycle.batch_number or "N/A"
+        header_data = cycle.header_data or {}
+
     try:
-        # Build Pandas DataFrames from polled 0.5s time-series rows
         if ts_rows:
             raw_df = pd.DataFrame(
                 [
@@ -344,32 +356,41 @@ async def generate_cycle_pdf_report(
                 values="value",
                 aggfunc="first",
             ).sort_index()
-
-            # Extract any non-numeric string metadata tags (such as Recipe_Name / Batch_ID)
-            non_numeric_rows = raw_df[raw_df["value"].isna() & raw_df["raw_value"].notna()]
-            string_meta_parts: list[str] = []
-            for tag_name, grp in non_numeric_rows.groupby("tag_name"):
-                unique_vals = grp["raw_value"].dropna().unique().tolist()
-                if unique_vals:
-                    string_meta_parts.append(f"{tag_name}: {', '.join(unique_vals)}")
-            string_metadata_summary = (
-                " | ".join(string_meta_parts) if string_meta_parts else "Standard"
-            )
             total_snapshots = int(len(df_numeric))
         else:
             df_numeric = pd.DataFrame()
-            string_metadata_summary = "No samples recorded"
             total_snapshots = 0
+
+        # Format static one-shot header metadata (excluding Batch_Number which has its own field)
+        header_parts = [
+            f"{k}: {v}"
+            for k, v in header_data.items()
+            if k not in ("Batch_Number", "batch_number") and v is not None
+        ]
+        header_metadata_summary = (
+            " | ".join(header_parts) if header_parts else "Standard"
+        )
 
         duration_seconds = round(
             max(0.0, (end_time - start_time).total_seconds()), 2
         )
 
-        # Evaluate parameter summary tables and alarm rules
         parameter_tables = _evaluate_parameter_tables(
             df_numeric, layout_cfg.parameter_tables
         )
         triggered_alarms = _evaluate_alarms(df_numeric, layout_cfg.alarms)
+
+        formatted_csv_alarms = [
+            {
+                "alarm_code": r.alarm_code,
+                "alarm_text": r.alarm_text,
+                "severity": r.severity,
+                "source_file": r.source_file,
+                "timestamp_str": r.timestamp.strftime("%H:%M:%S.%f")[:-3],
+            }
+            for r in csv_alarm_rows
+        ]
+        total_alarms_count = len(formatted_csv_alarms) + len(triggered_alarms)
 
         safe_report_name = "".join(
             c if c.isalnum() or c in ("-", "_") else "_" for c in report_name
@@ -385,16 +406,18 @@ async def generate_cycle_pdf_report(
             "report_name": report_name,
             "trigger_node": trigger_node,
             "cycle": {"id": cycle_id},
+            "batch_number": batch_number,
+            "header_metadata_summary": header_metadata_summary,
             "start_time_str": start_time.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
             "end_time_str": end_time.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
             "duration_seconds": f"{duration_seconds:.2f}",
             "total_snapshots": total_snapshots,
-            "string_metadata_summary": string_metadata_summary,
             "parameter_tables": parameter_tables,
             "triggered_alarms": triggered_alarms,
+            "csv_alarms": formatted_csv_alarms,
+            "total_alarms_count": total_alarms_count,
         }
 
-        # Render charts & PDF in a worker thread so the async event loop stays responsive
         await asyncio.to_thread(
             _render_charts_and_compile_pdf_sync,
             df_numeric,
@@ -426,17 +449,19 @@ async def generate_cycle_pdf_report(
                 cycle_to_update.error_message = None
 
         logger.info(
-            "Generated PDF report for cycle_id=%d -> %s (status=%s, alarms=%d)",
+            "Generated PDF report for cycle_id=%d (batch=%s) -> %s (status=%s, csv_alarms=%d, opc_alarms=%d)",
             cycle_id,
-            output_pdf_path,
+            batch_number,
+            output_pdf_path.name,
             final_status.value,
+            len(formatted_csv_alarms),
             len(triggered_alarms),
         )
         return GeneratedReportResult(
             cycle_id=cycle_id,
             pdf_path=output_pdf_path,
             status=final_status,
-            triggered_alarms_count=len(triggered_alarms),
+            triggered_alarms_count=total_alarms_count,
             print_result=print_res,
         )
 

@@ -90,6 +90,7 @@ class MockS71500Server:
         mixed_tags: list[tuple[str, Any, ua.VariantType]] = [
             ("Step_Counter", 1, ua.VariantType.Int32),
             ("Alarm_OverTemp", False, ua.VariantType.Boolean),
+            ("Batch_Number", "BATCH_2026_001", ua.VariantType.String),
             ("Recipe_Name", "RECIPE_A_200C", ua.VariantType.String),
         ]
         for tag_name, init_val, vtype in mixed_tags:
@@ -123,6 +124,7 @@ class MockS71500Server:
         step: int,
         alarm_overtemp: bool = False,
         recipe_name: str = "RECIPE_A_200C",
+        batch_number: Optional[str] = None,
     ) -> dict[str, Any]:
         """
         Update the simulated S7-1500 DB tags with realistic curves for a given step.
@@ -147,6 +149,10 @@ class MockS71500Server:
         await self.nodes["Recipe_Name"].write_value(
             ua.Variant(str(recipe_name), ua.VariantType.String)
         )
+        if batch_number is not None:
+            await self.nodes["Batch_Number"].write_value(
+                ua.Variant(str(batch_number), ua.VariantType.String)
+            )
 
         return {
             **float_updates,
