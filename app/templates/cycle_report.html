@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>{{ header_title }} - Cycle #{{ cycle.id }}</title>
+    <style>
+        @page {
+            size: A4 portrait;
+            margin: 14mm 14mm 16mm 14mm;
+            @bottom-right {
+                content: "Page " counter(page) " of " counter(pages);
+                font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+                font-size: 8pt;
+                color: #64748b;
+            }
+            @bottom-left {
+                content: "{{ machine_name }} | Report Schema: {{ report_name }}";
+                font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+                font-size: 8pt;
+                color: #64748b;
+            }
+        }
+
+        body {
+            font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+            font-size: 9.5pt;
+            color: #1e293b;
+            margin: 0;
+            padding: 0;
+            line-height: 1.4;
+        }
+
+        .header-banner {
+            border-bottom: 2.5px solid #0f172a;
+            padding-bottom: 10px;
+            margin-bottom: 14px;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+        }
+
+        .header-title {
+            font-size: 16pt;
+            font-weight: 700;
+            color: #0f172a;
+            margin: 0 0 4px 0;
+        }
+
+        .header-subtitle {
+            font-size: 9.5pt;
+            color: #475569;
+            margin: 0;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 5px 12px;
+            border-radius: 4px;
+            font-weight: 700;
+            font-size: 9pt;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .status-pass {
+            background-color: #dcfce7;
+            color: #166534;
+            border: 1px solid #86efac;
+        }
+
+        .status-alarm {
+            background-color: #fee2e2;
+            color: #991b1b;
+            border: 1px solid #fca5a5;
+        }
+
+        .meta-grid {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 16px;
+            background-color: #f8fafc;
+            border: 1px solid #cbd5e1;
+        }
+
+        .meta-grid td {
+            padding: 6px 10px;
+            border: 1px solid #e2e8f0;
+            font-size: 9pt;
+        }
+
+        .meta-label {
+            font-weight: 600;
+            color: #475569;
+            width: 18%;
+            background-color: #f1f5f9;
+        }
+
+        .meta-value {
+            color: #0f172a;
+            width: 32%;
+            font-family: "Courier New", Courier, monospace;
+            font-weight: 600;
+        }
+
+        .section-title {
+            font-size: 11.5pt;
+            font-weight: 700;
+            color: #0f172a;
+            border-left: 4px solid #2563eb;
+            padding-left: 8px;
+            margin: 16px 0 8px 0;
+        }
+
+        table.data-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 14px;
+            font-size: 8.8pt;
+        }
+
+        table.data-table th {
+            background-color: #1e293b;
+            color: #ffffff;
+            text-align: left;
+            padding: 6px 8px;
+            font-weight: 600;
+        }
+
+        table.data-table td {
+            padding: 5px 8px;
+            border-bottom: 1px solid #cbd5e1;
+        }
+
+        table.data-table tr:nth-child(even) td {
+            background-color: #f8fafc;
+        }
+
+        .num-col {
+            text-align: right;
+            font-family: "Courier New", Courier, monospace;
+        }
+
+        .pill-ok {
+            color: #166534;
+            font-weight: 700;
+        }
+
+        .pill-fail {
+            color: #991b1b;
+            font-weight: 700;
+        }
+
+        .pill-warn {
+            color: #b45309;
+            font-weight: 700;
+        }
+
+        .chart-card {
+            border: 1px solid #cbd5e1;
+            border-radius: 4px;
+            padding: 8px;
+            margin-bottom: 12px;
+            background-color: #ffffff;
+            page-break-inside: avoid;
+        }
+
+        .chart-card img {
+            width: 100%;
+            height: auto;
+            display: block;
+        }
+
+        .no-alarms-box {
+            padding: 8px 12px;
+            background-color: #f0fdf4;
+            border: 1px solid #bbf7d0;
+            color: #166534;
+            font-size: 9pt;
+            margin-bottom: 14px;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="header-banner">
+        <div>
+            <h1 class="header-title">{{ header_title }}</h1>
+            <p class="header-subtitle">Machine: <strong>{{ machine_name }}</strong> &bull; Trigger Node: <code>{{ trigger_node }}</code></p>
+        </div>
+        <div>
+            {% if triggered_alarms %}
+                <span class="status-badge status-alarm">ALARM TRIGGERED ({{ triggered_alarms | length }})</span>
+            {% else %}
+                <span class="status-badge status-pass">CYCLE OK / NOMINAL</span>
+            {% endif %}
+        </div>
+    </div>
+
+    <table class="meta-grid">
+        <tr>
+            <td class="meta-label">Cycle ID</td>
+            <td class="meta-value">#{{ cycle.id }}</td>
+            <td class="meta-label">Schema Name</td>
+            <td class="meta-value">{{ report_name }}</td>
+        </tr>
+        <tr>
+            <td class="meta-label">Start Time (UTC)</td>
+            <td class="meta-value">{{ start_time_str }}</td>
+            <td class="meta-label">End Time (UTC)</td>
+            <td class="meta-value">{{ end_time_str }}</td>
+        </tr>
+        <tr>
+            <td class="meta-label">Cycle Duration</td>
+            <td class="meta-value">{{ duration_seconds }} s ({{ total_snapshots }} polls @ 0.5s)</td>
+            <td class="meta-label">Metadata / Recipe</td>
+            <td class="meta-value">{{ string_metadata_summary }}</td>
+        </tr>
+    </table>
+
+    <!-- ALARMS SECTION -->
+    <h2 class="section-title">Cycle Alarms &amp; Interlocks</h2>
+    {% if triggered_alarms %}
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Severity</th>
+                    <th>Alarm Description</th>
+                    <th>Tag</th>
+                    <th>Condition</th>
+                    <th>First Trigger (UTC)</th>
+                    <th class="num-col">Active Polls</th>
+                    <th class="num-col">Peak Value</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for alm in triggered_alarms %}
+                <tr>
+                    <td class="{% if alm.severity == 'CRITICAL' %}pill-fail{% else %}pill-warn{% endif %}">{{ alm.severity }}</td>
+                    <td><strong>{{ alm.label }}</strong></td>
+                    <td><code>{{ alm.tag_name }}</code></td>
+                    <td><code>{{ alm.condition_display }}</code></td>
+                    <td>{{ alm.first_timestamp }}</td>
+                    <td class="num-col">{{ alm.active_samples }} ({{ alm.active_duration_s }}s)</td>
+                    <td class="num-col">{{ alm.peak_value }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% else %}
+        <div class="no-alarms-box">
+            &#10003; No alarms or interlock violations were triggered during this machine cycle.
+        </div>
+    {% endif %}
+
+    <!-- PARAMETER TABLES SECTION -->
+    {% for table in parameter_tables %}
+        <h2 class="section-title">{{ table.title }}</h2>
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Parameter</th>
+                    <th>Tag</th>
+                    <th>Unit</th>
+                    <th class="num-col">Min</th>
+                    <th class="num-col">Max</th>
+                    <th class="num-col">Avg</th>
+                    <th class="num-col">Setpoint / Tol.</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in table.rows %}
+                <tr>
+                    <td><strong>{{ row.label }}</strong></td>
+                    <td><code>{{ row.tag_name }}</code></td>
+                    <td>{{ row.unit }}</td>
+                    <td class="num-col">{{ row.min_val }}</td>
+                    <td class="num-col">{{ row.max_val }}</td>
+                    <td class="num-col">{{ row.avg_val }}</td>
+                    <td class="num-col">{{ row.setpoint_display }}</td>
+                    <td class="{% if row.in_tolerance %}pill-ok{% else %}pill-fail{% endif %}">
+                        {{ "PASS" if row.in_tolerance else "OUT OF SPEC" }}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    {% endfor %}
+
+    <!-- CHARTS SECTION -->
+    {% if chart_images %}
+        <h2 class="section-title">Process Time-Series Charts (0.5s Resolution)</h2>
+        {% for chart in chart_images %}
+            <div class="chart-card">
+                <img src="{{ chart.file_uri }}" alt="{{ chart.title }}">
+            </div>
+        {% endfor %}
+    {% endif %}
+
+</body>
+</html>

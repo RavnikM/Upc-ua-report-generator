@@ -87,21 +87,39 @@ class ReportSchema(Base):
         Helper method to extract a deduplicated mapping of {tag_name: node_id}
         from `schema_config` for bulk OPC-UA reads during an active cycle.
 
-        Expected `schema_config` structure example:
-        {
-            "tags": {
-                "Temp_Zone1": "ns=3;s=\"Cycle_Data\".\"Temp_Zone1\"",
-                "Pressure_Main": "ns=3;s=\"Cycle_Data\".\"Pressure_Main\""
-            },
-            "charts": [...],
-            "tables": [...],
-            "alarms": [...]
-        }
+        Supports both explicit top-level `"tags"` dictionaries and inline tag/node_id
+        entries inside `"charts"`, `"tables"` / `"parameter_tables"`, and `"alarms"`.
         """
+        polled: dict[str, str] = {}
+
+        # 1. Top-level "tags" mapping: {"Temp_Zone1": 'ns=3;s="Cycle_Data"."Temp_Zone1"'}
         tags = self.schema_config.get("tags", {})
         if isinstance(tags, dict):
-            return {str(k): str(v) for k, v in tags.items()}
-        return {}
+            for tag_name, node_id in tags.items():
+                if tag_name and node_id:
+                    polled[str(tag_name)] = str(node_id)
+
+        # 2. Inline series inside "charts"
+        for chart in self.schema_config.get("charts", []):
+            if isinstance(chart, dict):
+                for series in chart.get("series", []):
+                    if isinstance(series, dict) and series.get("tag_name") and series.get("node_id"):
+                        polled[str(series["tag_name"])] = str(series["node_id"])
+
+        # 3. Inline parameters inside "parameter_tables" or "tables"
+        for table_key in ("parameter_tables", "tables"):
+            for table in self.schema_config.get(table_key, []):
+                if isinstance(table, dict):
+                    for param in table.get("parameters", []):
+                        if isinstance(param, dict) and param.get("tag_name") and param.get("node_id"):
+                            polled[str(param["tag_name"])] = str(param["node_id"])
+
+        # 4. Inline alarm definitions inside "alarms"
+        for alarm in self.schema_config.get("alarms", []):
+            if isinstance(alarm, dict) and alarm.get("tag_name") and alarm.get("node_id"):
+                polled[str(alarm["tag_name"])] = str(alarm["node_id"])
+
+        return polled
 
 
 class CycleRecord(Base):

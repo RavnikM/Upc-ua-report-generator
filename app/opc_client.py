@@ -48,6 +48,7 @@ class CyclePollerConfig:
     poll_interval: float = 0.5
     reconnect_delay: float = 5.0
     persist_to_db: bool = True
+    auto_generate_pdf: bool = True
     pdf_simulation_delay: float = 0.05
 
 
@@ -430,19 +431,36 @@ class S7CyclePoller:
 
     async def trigger_pdf_generation(self, cycle_id: int) -> None:
         """
-        Placeholder coroutine for the PDF generation & OS printing pipeline.
+        Execute the asynchronous PDF generation & OS printing pipeline when a cycle
+        completes (or run a lightweight placeholder when `persist_to_db=False`).
         """
-        logger.info(
-            "[PDF Pipeline Placeholder] Starting report generation for cycle_id=%d...",
-            cycle_id,
-        )
         try:
-            await asyncio.sleep(self.config.pdf_simulation_delay)
-            self.completed_cycle_ids.append(cycle_id)
-            logger.info(
-                "[PDF Pipeline Placeholder] Report generation completed for cycle_id=%d.",
-                cycle_id,
-            )
+            if self.config.persist_to_db and self.config.auto_generate_pdf:
+                from app.report_generator import generate_cycle_pdf_report
+
+                logger.info(
+                    "[PDF Pipeline] Starting report generation for cycle_id=%d...",
+                    cycle_id,
+                )
+                result = await generate_cycle_pdf_report(cycle_id=cycle_id)
+                self.completed_cycle_ids.append(cycle_id)
+                logger.info(
+                    "[PDF Pipeline] Completed PDF report for cycle_id=%d -> %s (status=%s)",
+                    cycle_id,
+                    result.pdf_path.name,
+                    result.status.value,
+                )
+            else:
+                logger.info(
+                    "[PDF Pipeline Placeholder] Starting report generation for cycle_id=%d...",
+                    cycle_id,
+                )
+                await asyncio.sleep(self.config.pdf_simulation_delay)
+                self.completed_cycle_ids.append(cycle_id)
+                logger.info(
+                    "[PDF Pipeline Placeholder] Report generation completed for cycle_id=%d.",
+                    cycle_id,
+                )
         except Exception as exc:
             logger.exception(
                 "Failed to generate PDF report for cycle_id=%d: %s",
